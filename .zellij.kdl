@@ -1,0 +1,25 @@
+layout {
+  default_tab_template split_direction="horizontal" {
+    children
+    pane size=1 borderless=true {
+      plugin location="compact-bar"
+    }
+  }
+
+  tab name="1 code" focus=true {
+    pane split_direction="vertical" {
+      pane name="editor" size="80%" focus=true command="${EDITOR}" borderless=true
+      pane name="tests" size="20%" command="bacon" {
+        args "nextest"
+      }
+    }
+  }
+
+  tab name="2 servers" {
+    pane split_direction="vertical" {
+      pane name="postgres" command="docker" {
+        args "run" "--name" "mneme_db" "-e" "POSTGRES_USER=mneme" "-e" "POSTGRES_PASSWORD=mneme" "-e" "POSTGRES_DB=mneme" "-v" "./.pg_data:/var/lib/postgresql/data" "--rm" "-p" "5432:5432" "postgres:17"
+      }
+		}
+	}
+}
