@@ -1,6 +1,14 @@
 [package]
 name = "mneme"
 version = "0.1.0"
+authors = ["John Wilger <john@johnwilger.com>"]
 edition = "2024"
+description = "An event-sourcing library for Rust projects."
+repository = "https://github.com/jwilger/mneme"
+license = "MIT"
+keywords = ["data", "events", "event-sourcing", "cqrs", "postgresql"]
+
+[badges]
+maintenance = { status = "actively-developed" }
 
 [dependencies]
