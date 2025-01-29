@@ -12,3 +12,4 @@ keywords = ["data", "events", "event-sourcing", "cqrs", "postgresql"]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
+thiserror = "2.0.11"
