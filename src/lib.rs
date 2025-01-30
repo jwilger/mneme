@@ -1,19 +1,23 @@
 use std::error::Error;
 
-pub trait EventStore<T, E: Error> {
-    fn publish(&mut self, events: Vec<T>) -> Result<(), E>;
+#[derive(thiserror::Error, Debug)]
+#[error("Storage error: {0}")]
+pub struct StorageError(String);
+
+pub trait EventStore<T> {
+    fn publish(&mut self, events: Vec<T>) -> Result<(), StorageError>;
 }
 
 pub trait Command<T, E: Error> {
     fn handle(&self) -> Result<Vec<T>, E>;
 }
 
-pub fn execute<T, E: Error, S: EventStore<T, E>, C: Command<T, E>>(
+pub fn execute<T, E: Error + From<StorageError>, S: EventStore<T>, C: Command<T, E>>(
     command: C,
     event_store: &mut S,
 ) -> Result<(), E> {
     match command.handle() {
-        Ok(events) => event_store.publish(events),
+        Ok(events) => event_store.publish(events).map_err(|e| E::from(e)),
         Err(error) => Err(error),
     }
 }
@@ -27,6 +31,11 @@ mod tests {
     #[derive(Error, Debug)]
     #[error("Execution error: {0}")]
     struct ExecutionError(String);
+    impl From<StorageError> for ExecutionError {
+        fn from(e: StorageError) -> Self {
+            ExecutionError(format!("Storage error: {:?}", e.0))
+        }
+    }
 
     struct NoopCommand {
         id: i32,
@@ -60,8 +69,8 @@ mod tests {
             EventStoreImpl { events: vec![] }
         }
     }
-    impl<T> EventStore<T, ExecutionError> for EventStoreImpl<T> {
-        fn publish(&mut self, events: Vec<T>) -> Result<(), ExecutionError> {
+    impl<T> EventStore<T> for EventStoreImpl<T> {
+        fn publish(&mut self, events: Vec<T>) -> Result<(), StorageError> {
             self.events.extend(events);
             Ok(())
         }
