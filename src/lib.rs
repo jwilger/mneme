@@ -29,12 +29,11 @@ mod tests {
     use super::*;
 
     #[derive(Error, Debug)]
-    #[error("Execution error: {0}")]
-    struct ExecutionError(String);
-    impl From<StorageError> for ExecutionError {
-        fn from(e: StorageError) -> Self {
-            ExecutionError(format!("Storage error: {:?}", e.0))
-        }
+    enum ExecutionError {
+        #[error("Storage error: {0}")]
+        StorageError(#[from] StorageError),
+        #[error("Rejected")]
+        Rejected,
     }
 
     struct NoopCommand {
@@ -48,7 +47,7 @@ mod tests {
     impl Command<DomainEvent, ExecutionError> for NoopCommand {
         fn handle(&self) -> Result<Vec<DomainEvent>, ExecutionError> {
             match self.id {
-                456 => Err(ExecutionError("Rejected".to_string())),
+                456 => Err(ExecutionError::Rejected),
                 _ => Ok(vec![]),
             }
         }
@@ -63,14 +62,26 @@ mod tests {
     #[derive(Debug)]
     struct EventStoreImpl<T> {
         events: Vec<T>,
+        should_fail: bool,
     }
     impl<T> EventStoreImpl<T> {
         fn new() -> Self {
-            EventStoreImpl { events: vec![] }
+            EventStoreImpl {
+                events: vec![],
+                should_fail: false,
+            }
+        }
+
+        fn produce_error_for_next_publish(&mut self) {
+            self.should_fail = true;
         }
     }
     impl<T> EventStore<T> for EventStoreImpl<T> {
         fn publish(&mut self, events: Vec<T>) -> Result<(), StorageError> {
+            if self.should_fail {
+                self.should_fail = false;
+                return Err(StorageError("Failed to store events".to_string()));
+            }
             self.events.extend(events);
             Ok(())
         }
@@ -107,7 +118,7 @@ mod tests {
         let mut event_store = EventStoreImpl::new();
         let command = NoopCommand::new(456);
         match execute(command, &mut event_store) {
-            Err(ExecutionError(_)) => (),
+            Err(ExecutionError::Rejected) => (),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
@@ -124,6 +135,17 @@ mod tests {
                     DomainEvent::BarHappened(123)
                 ])
             }
+            other => panic!("Unexpected result: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn event_storeage_error_surfaced_as_execution_error() {
+        let mut event_store = EventStoreImpl::<DomainEvent>::new();
+        event_store.produce_error_for_next_publish();
+        let command = EventProducingCommand::new();
+        match execute(command, &mut event_store) {
+            Err(ExecutionError::StorageError(_)) => (),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
