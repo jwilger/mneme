@@ -4,20 +4,27 @@ use std::error::Error;
 #[error("Storage error: {0}")]
 pub struct StorageError(String);
 
-pub trait EventStore<T> {
-    fn publish(&mut self, events: Vec<T>) -> Result<(), StorageError>;
+pub trait EventStore {
+    type Event;
+
+    fn publish(&mut self, events: Vec<Self::Event>) -> Result<(), StorageError>;
 }
 
-pub trait Command<T, E: Error> {
-    fn handle(&self) -> Result<Vec<T>, E>;
+pub trait Command {
+    type Event;
+    type Error: Error;
+
+    fn handle(&self) -> Result<Vec<Self::Event>, Self::Error>;
 }
 
-pub fn execute<T, E: Error + From<StorageError>, S: EventStore<T>, C: Command<T, E>>(
-    command: C,
-    event_store: &mut S,
-) -> Result<(), E> {
+pub fn execute<C, S>(command: C, event_store: &mut S) -> Result<(), C::Error>
+where
+    C: Command,
+    S: EventStore<Event = C::Event>,
+    C::Error: From<StorageError>,
+{
     match command.handle() {
-        Ok(events) => event_store.publish(events).map_err(|e| E::from(e)),
+        Ok(events) => event_store.publish(events).map_err(C::Error::from),
         Err(error) => Err(error),
     }
 }
@@ -44,8 +51,11 @@ mod tests {
             NoopCommand { id }
         }
     }
-    impl Command<DomainEvent, ExecutionError> for NoopCommand {
-        fn handle(&self) -> Result<Vec<DomainEvent>, ExecutionError> {
+    impl Command for NoopCommand {
+        type Event = DomainEvent;
+        type Error = ExecutionError;
+
+        fn handle(&self) -> Result<Vec<Self::Event>, Self::Error> {
             match self.id {
                 456 => Err(ExecutionError::Rejected),
                 _ => Ok(vec![]),
@@ -76,8 +86,10 @@ mod tests {
             self.should_fail = true;
         }
     }
-    impl<T> EventStore<T> for EventStoreImpl<T> {
-        fn publish(&mut self, events: Vec<T>) -> Result<(), StorageError> {
+    impl<T> EventStore for EventStoreImpl<T> {
+        type Event = T;
+
+        fn publish(&mut self, events: Vec<Self::Event>) -> Result<(), StorageError> {
             if self.should_fail {
                 self.should_fail = false;
                 return Err(StorageError("Failed to store events".to_string()));
@@ -94,8 +106,11 @@ mod tests {
         }
     }
 
-    impl Command<DomainEvent, ExecutionError> for EventProducingCommand {
-        fn handle(&self) -> Result<Vec<DomainEvent>, ExecutionError> {
+    impl Command for EventProducingCommand {
+        type Event = DomainEvent;
+        type Error = ExecutionError;
+
+        fn handle(&self) -> Result<Vec<Self::Event>, Self::Error> {
             Ok(vec![
                 DomainEvent::FooHappened(123),
                 DomainEvent::BarHappened(123),
