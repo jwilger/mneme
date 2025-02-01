@@ -21,3 +21,4 @@ Cargo.lock
 #.idea/
 .cargo
 .bacon-locations
+.pg_data
