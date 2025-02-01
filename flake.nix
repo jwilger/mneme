@@ -42,7 +42,6 @@
             RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
           };
 
-          # TODO: the env vars are not quite correct here
           shellHook = ''
             export CARGO_HOME="''${PWD}/.cargo"
             export PATH="''${CARGO_HOME}/bin:''${PATH}"

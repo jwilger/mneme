@@ -12,4 +12,6 @@ keywords = ["data", "events", "event-sourcing", "cqrs", "postgresql"]
 maintenance = { status = "actively-developed" }
 
 [dependencies]
+futures = "0.3.31"
+nutype = { version = "0.5.1", features = ["regex", "serde"] }
 thiserror = "2.0.11"
