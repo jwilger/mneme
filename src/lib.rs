@@ -1,15 +1,29 @@
 use nutype::nutype;
-use std::error::Error;
+use std::fmt::Debug;
+use std::{collections::HashMap, error::Error};
 
 /// Represents an error that occurs during storage operations.
 #[derive(Clone, thiserror::Error, Debug)]
-#[error("Storage error: {0}")]
-pub struct StorageError(String);
+pub enum StorageError {
+    #[error("Event stream version mismatch: expected {expected:?}, received {received:?}")]
+    VersionMismatch {
+        expected: AggregateStreamVersions,
+        received: AggregateStreamVersions,
+    },
+    #[error("Event-storage error: {0}")]
+    Other(String),
+}
+// #[error("Storage error: {0}")]
+// pub struct StorageError(String);
 
 /// Represents an identifier for an event stream.
 ///
 /// This struct ensures that the identifier is trimmed and not empty.
-#[nutype(sanitize(trim), validate(not_empty), derive(Debug, PartialEq))]
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Clone, Debug, Eq, Hash, PartialEq)
+)]
 pub struct EventStreamId(String);
 
 #[cfg(test)]
@@ -33,6 +47,24 @@ impl EventStreamId {
     }
 }
 
+#[nutype(derive(Debug, Clone, PartialEq))]
+pub struct EventStreamVersion(u64);
+
+#[derive(Clone, Debug)]
+pub struct AggregateStreamVersions(HashMap<EventStreamId, EventStreamVersion>);
+impl AggregateStreamVersions {
+    pub fn update(&mut self, stream_id: EventStreamId, stream_version: EventStreamVersion) {
+        self.0.insert(stream_id, stream_version);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventEnvelope<T> {
+    pub event: T,
+    pub stream_id: EventStreamId,
+    pub stream_version: EventStreamVersion,
+}
+
 /// Represents a query for event streams.
 #[derive(Debug, PartialEq)]
 pub struct EventStreamQuery {
@@ -41,7 +73,7 @@ pub struct EventStreamQuery {
 }
 
 /// A trait representing an event store.
-pub trait EventStore {
+pub trait EventStore: Debug {
     /// The type of event stored.
     type Event;
 
@@ -54,7 +86,11 @@ pub trait EventStore {
     /// # Returns
     ///
     /// A result indicating success or a `StorageError`.
-    fn publish(&mut self, events: Vec<Self::Event>) -> Result<(), StorageError>;
+    fn publish(
+        &mut self,
+        events: Vec<Self::Event>,
+        expected_version: Option<AggregateStreamVersions>,
+    ) -> Result<(), StorageError>;
 
     /// Reads the event stream based on the provided query.
     ///
@@ -68,7 +104,7 @@ pub trait EventStore {
     fn read_stream(
         &self,
         query: Option<EventStreamQuery>,
-    ) -> Result<impl Iterator<Item = Self::Event>, StorageError>;
+    ) -> Result<impl Iterator<Item = EventEnvelope<Self::Event>>, StorageError>;
 }
 
 /// A trait representing the state of an aggregate that can be modified by applying events.
@@ -168,15 +204,26 @@ where
     C: Command,
     S: EventStore<Event = C::Event>,
 {
+    dbg!(&event_store);
     loop {
+        let mut version = AggregateStreamVersions(HashMap::new());
+        let mut expected_version = None;
         let state = event_store
             .read_stream(command.event_stream_query())
             .map(|event_stream| {
-                event_stream.fold(C::State::default(), |state, event| state.apply_event(event))
+                event_stream.fold(C::State::default(), |state, event_envelope| {
+                    version.update(event_envelope.stream_id, event_envelope.stream_version);
+                    expected_version = Some(version.clone());
+                    state.apply_event(event_envelope.event)
+                })
             })
             .unwrap_or_else(|_| C::State::default());
         let events = command.handle(state)?;
-        if let Err(error) = event_store.publish(events).map_err(C::Error::from) {
+        dbg!(&expected_version);
+        if let Err(error) = event_store
+            .publish(events, expected_version)
+            .map_err(C::Error::from)
+        {
             match command.handle_error(&error, failure_context)? {
                 Some(updated_failure_context) => {
                     failure_context = Some(updated_failure_context);
@@ -191,9 +238,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use thiserror::Error;
-
     use super::*;
+    use std::fmt::Debug;
+    use std::sync::LazyLock;
+    use thiserror::Error;
 
     #[derive(Clone, Debug, Error)]
     enum ExecutionError {
@@ -235,13 +283,16 @@ mod tests {
         CommandRecovered,
     }
 
+    static STREAM_ID: LazyLock<EventStreamId> =
+        LazyLock::new(|| EventStreamId::new_test("thing.123".to_string()));
+
     #[derive(Debug, PartialEq)]
     struct EventStoreImpl<T> {
-        events: Vec<T>,
+        events: Vec<EventEnvelope<T>>,
         should_fail: bool,
         expected_stream_query: Option<EventStreamQuery>,
     }
-    impl<T> EventStoreImpl<T> {
+    impl<T: Clone> EventStoreImpl<T> {
         fn new() -> Self {
             EventStoreImpl {
                 events: vec![],
@@ -255,26 +306,59 @@ mod tests {
         }
 
         fn expect_stream_query(&mut self, query: EventStreamQuery, events: Vec<T>) {
-            self.events = events;
+            self.events = events
+                .iter()
+                .enumerate()
+                .map(|(stream_version, event)| {
+                    let stream_version = EventStreamVersion::new(stream_version as u64);
+                    EventEnvelope {
+                        event: event.clone(),
+                        stream_version: stream_version.clone(),
+                        stream_id: STREAM_ID.clone(),
+                    }
+                })
+                .collect();
             self.expected_stream_query = Some(query);
         }
     }
-    impl<T: Clone> EventStore for EventStoreImpl<T> {
+    impl<T: Clone + Debug> EventStore for EventStoreImpl<T> {
         type Event = T;
 
-        fn publish(&mut self, events: Vec<Self::Event>) -> Result<(), StorageError> {
+        fn publish(
+            &mut self,
+            events: Vec<Self::Event>,
+            _expected_version: Option<AggregateStreamVersions>,
+        ) -> Result<(), StorageError> {
             if self.should_fail {
                 self.should_fail = false;
-                return Err(StorageError("Failed to store events".to_string()));
+                return Err(StorageError::Other("Failed to store events".to_string()));
             }
-            self.events.extend(events);
+            let starting_version = match self.events.len() as u64 {
+                0 => 0,
+                1 => 0,
+                x => x,
+            };
+            events
+                .iter()
+                .enumerate()
+                .map(|(stream_version, event)| {
+                    let stream_version =
+                        EventStreamVersion::new(starting_version + stream_version as u64);
+                    EventEnvelope {
+                        event: event.clone(),
+                        stream_version: stream_version.clone(),
+                        stream_id: STREAM_ID.clone(),
+                    }
+                })
+                .for_each(|event| self.events.push(event));
+            dbg!(self);
             Ok(())
         }
 
         fn read_stream(
             &self,
             query: Option<EventStreamQuery>,
-        ) -> Result<impl Iterator<Item = Self::Event>, StorageError> {
+        ) -> Result<impl Iterator<Item = EventEnvelope<Self::Event>>, StorageError> {
             let expected_query = &self.expected_stream_query;
             assert_eq!(query, *expected_query);
             Ok(self.events.iter().cloned())
@@ -396,8 +480,16 @@ mod tests {
         match execute(command, &mut event_store, None) {
             Ok(()) => {
                 assert_eq!(event_store.events, vec![
-                    DomainEvent::FooHappened(123),
-                    DomainEvent::BarHappened(123)
+                    EventEnvelope {
+                        event: DomainEvent::FooHappened(123),
+                        stream_id: STREAM_ID.clone(),
+                        stream_version: EventStreamVersion::new(0),
+                    },
+                    EventEnvelope {
+                        event: DomainEvent::BarHappened(123),
+                        stream_id: STREAM_ID.clone(),
+                        stream_version: EventStreamVersion::new(1),
+                    },
                 ])
             }
             other => panic!("Unexpected result: {:?}", other),
@@ -421,7 +513,11 @@ mod tests {
         event_store.produce_error_for_next_publish();
         let command = RecoveringCommand::new();
         match execute(command, &mut event_store, None) {
-            Ok(()) => assert_eq!(event_store.events, vec![DomainEvent::CommandRecovered]),
+            Ok(()) => assert_eq!(event_store.events, vec![EventEnvelope {
+                event: DomainEvent::CommandRecovered,
+                stream_id: STREAM_ID.clone(),
+                stream_version: EventStreamVersion::new(0),
+            },]),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
@@ -441,11 +537,23 @@ mod tests {
         match execute(command, &mut event_store, None) {
             Ok(()) => {
                 assert_eq!(event_store.events, vec![
-                    DomainEvent::FooHappened(123),
-                    DomainEvent::BarHappened(123),
-                    DomainEvent::BazHappened {
-                        id: 123,
-                        value: 246
+                    EventEnvelope {
+                        event: DomainEvent::FooHappened(123),
+                        stream_id: STREAM_ID.clone(),
+                        stream_version: EventStreamVersion::new(0),
+                    },
+                    EventEnvelope {
+                        event: DomainEvent::BarHappened(123),
+                        stream_id: STREAM_ID.clone(),
+                        stream_version: EventStreamVersion::new(1),
+                    },
+                    EventEnvelope {
+                        event: DomainEvent::BazHappened {
+                            id: 123,
+                            value: 246,
+                        },
+                        stream_id: STREAM_ID.clone(),
+                        stream_version: EventStreamVersion::new(2),
                     },
                 ])
             }
