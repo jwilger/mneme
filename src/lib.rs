@@ -66,14 +66,14 @@ pub struct EventEnvelope<T> {
 }
 
 /// Represents a query for event streams.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct EventStreamQuery {
     /// Represents the list of event stream IDs to be queried.
     pub stream_ids: Vec<EventStreamId>,
 }
 
 /// A trait representing an event store.
-pub trait EventStore: Debug {
+pub trait EventStore {
     /// The type of event stored.
     type Event;
 
@@ -89,7 +89,7 @@ pub trait EventStore: Debug {
     fn publish(
         &mut self,
         events: Vec<Self::Event>,
-        expected_version: Option<AggregateStreamVersions>,
+        expected_version: AggregateStreamVersions,
     ) -> Result<(), StorageError>;
 
     /// Reads the event stream based on the provided query.
@@ -103,7 +103,7 @@ pub trait EventStore: Debug {
     /// A result containing an iterator over the events or a `StorageError`.
     fn read_stream(
         &self,
-        query: Option<EventStreamQuery>,
+        query: EventStreamQuery,
     ) -> Result<impl Iterator<Item = EventEnvelope<Self::Event>>, StorageError>;
 }
 
@@ -204,22 +204,9 @@ where
     C: Command,
     S: EventStore<Event = C::Event>,
 {
-    dbg!(&event_store);
     loop {
-        let mut version = AggregateStreamVersions(HashMap::new());
-        let mut expected_version = None;
-        let state = event_store
-            .read_stream(command.event_stream_query())
-            .map(|event_stream| {
-                event_stream.fold(C::State::default(), |state, event_envelope| {
-                    version.update(event_envelope.stream_id, event_envelope.stream_version);
-                    expected_version = Some(version.clone());
-                    state.apply_event(event_envelope.event)
-                })
-            })
-            .unwrap_or_else(|_| C::State::default());
+        let (state, expected_version) = build_state(&command, event_store);
         let events = command.handle(state)?;
-        dbg!(&expected_version);
         if let Err(error) = event_store
             .publish(events, expected_version)
             .map_err(C::Error::from)
@@ -234,6 +221,27 @@ where
             return Ok(());
         }
     }
+}
+
+fn build_state<C, S>(command: &C, event_store: &mut S) -> (C::State, AggregateStreamVersions)
+where
+    C: Command,
+    S: EventStore<Event = C::Event>,
+{
+    let mut version = AggregateStreamVersions(HashMap::new());
+    let state = match command.event_stream_query() {
+        None => C::State::default(),
+        Some(stream_query) => event_store
+            .read_stream(stream_query)
+            .map(|event_stream| {
+                event_stream.fold(C::State::default(), |state, event_envelope| {
+                    version.update(event_envelope.stream_id, event_envelope.stream_version);
+                    state.apply_event(event_envelope.event)
+                })
+            })
+            .unwrap_or_else(|_| C::State::default()),
+    };
+    (state, version)
 }
 
 #[cfg(test)]
@@ -327,7 +335,7 @@ mod tests {
         fn publish(
             &mut self,
             events: Vec<Self::Event>,
-            _expected_version: Option<AggregateStreamVersions>,
+            _expected_version: AggregateStreamVersions,
         ) -> Result<(), StorageError> {
             if self.should_fail {
                 self.should_fail = false;
@@ -351,16 +359,15 @@ mod tests {
                     }
                 })
                 .for_each(|event| self.events.push(event));
-            dbg!(self);
             Ok(())
         }
 
         fn read_stream(
             &self,
-            query: Option<EventStreamQuery>,
+            query: EventStreamQuery,
         ) -> Result<impl Iterator<Item = EventEnvelope<Self::Event>>, StorageError> {
             let expected_query = &self.expected_stream_query;
-            assert_eq!(query, *expected_query);
+            assert_eq!(Some(query), *expected_query);
             Ok(self.events.iter().cloned())
         }
     }
