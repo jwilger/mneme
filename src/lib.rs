@@ -204,21 +204,20 @@ where
     C: Command,
     S: EventStore<Event = C::Event>,
 {
-    loop {
+    loop { // until either the command succeeds or handle_error tells us to stop
         let (state, expected_version) = build_state(&command, event_store);
         let events = command.handle(state)?;
-        if let Err(error) = event_store
+        match event_store
             .publish(events, expected_version)
             .map_err(C::Error::from)
         {
-            match command.handle_error(&error, failure_context)? {
+            Err(error) => match command.handle_error(&error, failure_context)? {
                 Some(updated_failure_context) => {
                     failure_context = Some(updated_failure_context);
                 }
                 None => return Err(error),
-            }
-        } else {
-            return Ok(());
+            },
+            Ok(_) => return Ok(()),
         }
     }
 }
