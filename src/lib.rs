@@ -1,6 +1,7 @@
 use nutype::nutype;
 use std::fmt::Debug;
 use std::{collections::HashMap, error::Error};
+use tokio_stream::{Stream, StreamExt};
 
 /// Represents an error that occurs during storage operations.
 #[derive(Clone, thiserror::Error, Debug)]
@@ -88,7 +89,7 @@ pub trait EventStore {
         &mut self,
         events: Vec<Self::Event>,
         expected_version: AggregateStreamVersions,
-    ) -> Result<(), StorageError>;
+    ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
 
     /// Reads the event stream based on the provided query.
     ///
@@ -102,7 +103,9 @@ pub trait EventStore {
     fn read_stream(
         &self,
         query: EventStreamQuery,
-    ) -> Result<impl Iterator<Item = EventEnvelope<Self::Event>>, StorageError>;
+    ) -> impl std::future::Future<
+        Output = Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError>,
+    > + Send;
 }
 
 /// A trait representing the state of an aggregate that can be modified by applying events.
@@ -193,7 +196,7 @@ pub trait Command {
 ///
 /// * `C` - The type of the command.
 /// * `S` - The type of the event store.
-pub fn execute<C, S>(
+pub async fn execute<C, S>(
     command: C,
     event_store: &mut S,
     mut failure_context: Option<C::FailureContext>,
@@ -204,10 +207,11 @@ where
 {
     loop {
         // until either the command succeeds or handle_error tells us to stop
-        let (state, expected_version) = build_state(&command, event_store);
+        let (state, expected_version) = build_state(&command, event_store).await?;
         let events = command.handle(state)?;
         match event_store
             .publish(events, expected_version)
+            .await
             .map_err(C::Error::from)
         {
             Err(error) => match command.handle_error(&error, failure_context)? {
@@ -221,7 +225,10 @@ where
     }
 }
 
-fn build_state<C, S>(command: &C, event_store: &mut S) -> (C::State, AggregateStreamVersions)
+async fn build_state<C, S>(
+    command: &C,
+    event_store: &mut S,
+) -> Result<(C::State, AggregateStreamVersions), StorageError>
 where
     C: Command,
     S: EventStore<Event = C::Event>,
@@ -229,17 +236,18 @@ where
     let mut version = AggregateStreamVersions(HashMap::new());
     let state = match command.event_stream_query() {
         None => C::State::default(),
-        Some(stream_query) => event_store
-            .read_stream(stream_query)
-            .map(|event_stream| {
-                event_stream.fold(C::State::default(), |state, event_envelope| {
+        Some(stream_query) => {
+            event_store
+                .read_stream(stream_query)
+                .await?
+                .fold(C::State::default(), |state, event_envelope| {
                     version.update(event_envelope.stream_id, event_envelope.stream_version);
                     state.apply_event(event_envelope.event)
                 })
-            })
-            .unwrap_or_else(|_| C::State::default()),
+                .await
+        }
     };
-    (state, version)
+    Ok((state, version))
 }
 
 #[cfg(test)]
@@ -330,7 +338,7 @@ mod tests {
     impl EventStore for EventStoreImpl {
         type Event = DomainEvent;
 
-        fn publish(
+        async fn publish(
             &mut self,
             events: Vec<Self::Event>,
             _expected_version: AggregateStreamVersions,
@@ -360,13 +368,13 @@ mod tests {
             Ok(())
         }
 
-        fn read_stream(
+        async fn read_stream(
             &self,
             query: EventStreamQuery,
-        ) -> Result<impl Iterator<Item = EventEnvelope<Self::Event>>, StorageError> {
+        ) -> Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError> {
             let expected_query = &self.expected_stream_query;
             assert_eq!(Some(query), *expected_query);
-            Ok(self.events.iter().cloned())
+            Ok(tokio_stream::iter(self.events.clone()))
         }
     }
 
@@ -457,32 +465,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn successful_command_execution_with_no_events_produced() {
+    #[tokio::test]
+    async fn successful_command_execution_with_no_events_produced() {
         let mut event_store = EventStoreImpl::new();
         let command = NoopCommand::new(123);
-        match execute(command, &mut event_store, None) {
+        match execute(command, &mut event_store, None).await {
             Ok(()) => (),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
 
-    #[test]
-    fn command_rejection_error() {
+    #[tokio::test]
+    async fn command_rejection_error() {
         let mut event_store = EventStoreImpl::new();
         let command = NoopCommand::new(456);
-        match execute(command, &mut event_store, None) {
+        match execute(command, &mut event_store, None).await {
             Err(ExecutionError::Rejected) => (),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
 
-    #[test]
-    fn successful_execution_with_events_will_record_events() {
+    #[tokio::test]
+    async fn successful_execution_with_events_will_record_events() {
         let mut event_store = EventStoreImpl::new();
         assert_eq!(event_store.events, vec![]);
         let command = EventProducingCommand::new();
-        match execute(command, &mut event_store, None) {
+        match execute(command, &mut event_store, None).await {
             Ok(()) => {
                 assert_eq!(
                     event_store.events,
@@ -504,23 +512,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn event_storeage_error_surfaced_as_execution_error() {
+    #[tokio::test]
+    async fn event_storeage_error_surfaced_as_execution_error() {
         let mut event_store = EventStoreImpl::new();
         event_store.produce_error_for_next_publish();
         let command = EventProducingCommand::new();
-        match execute(command, &mut event_store, None) {
+        match execute(command, &mut event_store, None).await {
             Err(ExecutionError::StorageError(_)) => (),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
 
-    #[test]
-    fn allow_command_to_handle_execution_errors() {
+    #[tokio::test]
+    async fn allow_command_to_handle_execution_errors() {
         let mut event_store = EventStoreImpl::new();
         event_store.produce_error_for_next_publish();
         let command = RecoveringCommand::new();
-        match execute(command, &mut event_store, None) {
+        match execute(command, &mut event_store, None).await {
             Ok(()) => assert_eq!(
                 event_store.events,
                 vec![EventEnvelope {
@@ -533,8 +541,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn existing_events_are_available_to_handler() {
+    #[tokio::test]
+    async fn existing_events_are_available_to_handler() {
         let mut event_store = EventStoreImpl::new();
         let stream_query = EventStreamQuery {
             stream_ids: vec![EventStreamId::new_test("thing.123".into())],
@@ -545,7 +553,7 @@ mod tests {
         );
 
         let command = StatefulCommand::new(123);
-        match execute(command, &mut event_store, None) {
+        match execute(command, &mut event_store, None).await {
             Ok(()) => {
                 assert_eq!(
                     event_store.events,
