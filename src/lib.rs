@@ -13,8 +13,6 @@ pub enum StorageError {
     #[error("Event-storage error: {0}")]
     Other(String),
 }
-// #[error("Storage error: {0}")]
-// pub struct StorageError(String);
 
 /// Represents an identifier for an event stream.
 ///
