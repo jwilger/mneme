@@ -30,14 +30,15 @@ jobs:
           version=v${{ steps.extract_version.outputs.version }}
           if git rev-parse "$version" >/dev/null 2>&1; then
             echo "Tag $version already exists."
-            exit 0
+            echo "::set-output name=tag_exists::true"
           else
             echo "Tag $version does not exist."
             echo "::set-output name=tag::$version"
+            echo "::set-output name=tag_exists::false"
           fi
 
       - name: Create Release
-        if: steps.check_tag.outputs.tag
+        if: steps.check_tag.outputs.tag_exists == 'false'
         uses: actions/create-release@v1
         with:
           tag_name: ${{ steps.check_tag.outputs.tag }}
