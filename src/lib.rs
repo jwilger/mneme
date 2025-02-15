@@ -202,7 +202,8 @@ where
     C: Command,
     S: EventStore<Event = C::Event>,
 {
-    loop { // until either the command succeeds or handle_error tells us to stop
+    loop {
+        // until either the command succeeds or handle_error tells us to stop
         let (state, expected_version) = build_state(&command, event_store);
         let events = command.handle(state)?;
         match event_store
@@ -292,12 +293,12 @@ mod tests {
         LazyLock::new(|| EventStreamId::new_test("thing.123".to_string()));
 
     #[derive(Debug, PartialEq)]
-    struct EventStoreImpl<T> {
-        events: Vec<EventEnvelope<T>>,
+    struct EventStoreImpl {
+        events: Vec<EventEnvelope<DomainEvent>>,
         should_fail: bool,
         expected_stream_query: Option<EventStreamQuery>,
     }
-    impl<T: Clone> EventStoreImpl<T> {
+    impl EventStoreImpl {
         fn new() -> Self {
             EventStoreImpl {
                 events: vec![],
@@ -310,7 +311,7 @@ mod tests {
             self.should_fail = true;
         }
 
-        fn expect_stream_query(&mut self, query: EventStreamQuery, events: Vec<T>) {
+        fn expect_stream_query(&mut self, query: EventStreamQuery, events: Vec<DomainEvent>) {
             self.events = events
                 .iter()
                 .enumerate()
@@ -326,8 +327,8 @@ mod tests {
             self.expected_stream_query = Some(query);
         }
     }
-    impl<T: Clone + Debug> EventStore for EventStoreImpl<T> {
-        type Event = T;
+    impl EventStore for EventStoreImpl {
+        type Event = DomainEvent;
 
         fn publish(
             &mut self,
@@ -458,7 +459,7 @@ mod tests {
 
     #[test]
     fn successful_command_execution_with_no_events_produced() {
-        let mut event_store = EventStoreImpl::<DomainEvent>::new();
+        let mut event_store = EventStoreImpl::new();
         let command = NoopCommand::new(123);
         match execute(command, &mut event_store, None) {
             Ok(()) => (),
@@ -478,23 +479,26 @@ mod tests {
 
     #[test]
     fn successful_execution_with_events_will_record_events() {
-        let mut event_store = EventStoreImpl::<DomainEvent>::new();
+        let mut event_store = EventStoreImpl::new();
         assert_eq!(event_store.events, vec![]);
         let command = EventProducingCommand::new();
         match execute(command, &mut event_store, None) {
             Ok(()) => {
-                assert_eq!(event_store.events, vec![
-                    EventEnvelope {
-                        event: DomainEvent::FooHappened(123),
-                        stream_id: STREAM_ID.clone(),
-                        stream_version: EventStreamVersion::new(0),
-                    },
-                    EventEnvelope {
-                        event: DomainEvent::BarHappened(123),
-                        stream_id: STREAM_ID.clone(),
-                        stream_version: EventStreamVersion::new(1),
-                    },
-                ])
+                assert_eq!(
+                    event_store.events,
+                    vec![
+                        EventEnvelope {
+                            event: DomainEvent::FooHappened(123),
+                            stream_id: STREAM_ID.clone(),
+                            stream_version: EventStreamVersion::new(0),
+                        },
+                        EventEnvelope {
+                            event: DomainEvent::BarHappened(123),
+                            stream_id: STREAM_ID.clone(),
+                            stream_version: EventStreamVersion::new(1),
+                        },
+                    ]
+                )
             }
             other => panic!("Unexpected result: {:?}", other),
         }
@@ -502,7 +506,7 @@ mod tests {
 
     #[test]
     fn event_storeage_error_surfaced_as_execution_error() {
-        let mut event_store = EventStoreImpl::<DomainEvent>::new();
+        let mut event_store = EventStoreImpl::new();
         event_store.produce_error_for_next_publish();
         let command = EventProducingCommand::new();
         match execute(command, &mut event_store, None) {
@@ -513,53 +517,59 @@ mod tests {
 
     #[test]
     fn allow_command_to_handle_execution_errors() {
-        let mut event_store = EventStoreImpl::<DomainEvent>::new();
+        let mut event_store = EventStoreImpl::new();
         event_store.produce_error_for_next_publish();
         let command = RecoveringCommand::new();
         match execute(command, &mut event_store, None) {
-            Ok(()) => assert_eq!(event_store.events, vec![EventEnvelope {
-                event: DomainEvent::CommandRecovered,
-                stream_id: STREAM_ID.clone(),
-                stream_version: EventStreamVersion::new(0),
-            },]),
+            Ok(()) => assert_eq!(
+                event_store.events,
+                vec![EventEnvelope {
+                    event: DomainEvent::CommandRecovered,
+                    stream_id: STREAM_ID.clone(),
+                    stream_version: EventStreamVersion::new(0),
+                },]
+            ),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
 
     #[test]
     fn existing_events_are_available_to_handler() {
-        let mut event_store = EventStoreImpl::<DomainEvent>::new();
+        let mut event_store = EventStoreImpl::new();
         let stream_query = EventStreamQuery {
             stream_ids: vec![EventStreamId::new_test("thing.123".into())],
         };
-        event_store.expect_stream_query(stream_query, vec![
-            DomainEvent::FooHappened(123),
-            DomainEvent::BarHappened(123),
-        ]);
+        event_store.expect_stream_query(
+            stream_query,
+            vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123)],
+        );
 
         let command = StatefulCommand::new(123);
         match execute(command, &mut event_store, None) {
             Ok(()) => {
-                assert_eq!(event_store.events, vec![
-                    EventEnvelope {
-                        event: DomainEvent::FooHappened(123),
-                        stream_id: STREAM_ID.clone(),
-                        stream_version: EventStreamVersion::new(0),
-                    },
-                    EventEnvelope {
-                        event: DomainEvent::BarHappened(123),
-                        stream_id: STREAM_ID.clone(),
-                        stream_version: EventStreamVersion::new(1),
-                    },
-                    EventEnvelope {
-                        event: DomainEvent::BazHappened {
-                            id: 123,
-                            value: 246,
+                assert_eq!(
+                    event_store.events,
+                    vec![
+                        EventEnvelope {
+                            event: DomainEvent::FooHappened(123),
+                            stream_id: STREAM_ID.clone(),
+                            stream_version: EventStreamVersion::new(0),
                         },
-                        stream_id: STREAM_ID.clone(),
-                        stream_version: EventStreamVersion::new(2),
-                    },
-                ])
+                        EventEnvelope {
+                            event: DomainEvent::BarHappened(123),
+                            stream_id: STREAM_ID.clone(),
+                            stream_version: EventStreamVersion::new(1),
+                        },
+                        EventEnvelope {
+                            event: DomainEvent::BazHappened {
+                                id: 123,
+                                value: 246,
+                            },
+                            stream_id: STREAM_ID.clone(),
+                            stream_version: EventStreamVersion::new(2),
+                        },
+                    ]
+                )
             }
             other => panic!("Unexpected result: {:?}", other),
         };
