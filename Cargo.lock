@@ -159,18 +159,18 @@ dependencies = [
 
 [[package]]
 name = "nutype"
-version = "0.5.1"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f1ea9dc0315b5f4a6bda53b4602f4c77f877ac37f427d640a7f647bfba8edb6"
+checksum = "3340cb6773b0794ecb3f62ff66631d580f57151d9415c10ee8a27a357aeb998b"
 dependencies = [
  "nutype_macros",
 ]
 
 [[package]]
 name = "nutype_macros"
-version = "0.5.1"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23ebae17472b925d6a64837074e3f3ebe479f6bc4efaf673974a48adb90244d2"
+checksum = "35c955e27d02868fe90b9c2dc901661fd7ed67ec382782bdc67c6aa8d2e957a9"
 dependencies = [
  "cfg-if",
  "kinded",
