@@ -1,6 +1,6 @@
 [package]
 name = "mneme"
-version = "0.0.0"
+version = "0.3.1"
 authors = ["John Wilger <john@johnwilger.com>"]
 edition = "2024"
 description = "An event-sourcing library for Rust projects."
@@ -10,12 +10,6 @@ keywords = ["data", "events", "event-sourcing", "cqrs", "postgresql"]
 
 [badges]
 maintenance = { status = "actively-developed" }
-
-[build-dependencies]
-version-sync = "0.9.5"
-
-[package.metadata]
-version = { path = "VERSION" }
 
 [dependencies]
 futures = "0.3.31"
