@@ -1,3 +1,5 @@
+pub mod postgres_adapter;
+
 use nutype::nutype;
 use std::fmt::Debug;
 use std::{collections::HashMap, error::Error};
@@ -21,7 +23,7 @@ pub enum StorageError {
 #[nutype(
     sanitize(trim),
     validate(not_empty),
-    derive(Clone, Debug, Eq, Hash, PartialEq)
+    derive(AsRef, Clone, Debug, Display, Eq, Hash, PartialEq, Serialize)
 )]
 pub struct EventStreamId(String);
 
@@ -46,10 +48,10 @@ impl EventStreamId {
     }
 }
 
-#[nutype(derive(Debug, Clone, PartialEq))]
+#[nutype(derive(AsRef, Debug, Display, Clone, PartialEq, Serialize))]
 pub struct EventStreamVersion(u64);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AggregateStreamVersions(HashMap<EventStreamId, EventStreamVersion>);
 impl AggregateStreamVersions {
     pub fn update(&mut self, stream_id: EventStreamId, stream_version: EventStreamVersion) {
@@ -57,7 +59,7 @@ impl AggregateStreamVersions {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct EventEnvelope<T> {
     pub event: T,
     pub stream_id: EventStreamId,
