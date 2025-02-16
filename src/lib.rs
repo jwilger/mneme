@@ -1,3 +1,5 @@
+#![feature(assert_matches)]
+
 pub mod postgres_adapter;
 
 use nutype::nutype;
@@ -49,9 +51,9 @@ impl EventStreamId {
 }
 
 #[nutype(derive(AsRef, Debug, Display, Clone, PartialEq, Serialize))]
-pub struct EventStreamVersion(u64);
+pub struct EventStreamVersion(u32);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AggregateStreamVersions(HashMap<EventStreamId, EventStreamVersion>);
 impl AggregateStreamVersions {
     pub fn update(&mut self, stream_id: EventStreamId, stream_version: EventStreamVersion) {
@@ -74,10 +76,7 @@ pub struct EventStreamQuery {
 }
 
 /// A trait representing an event store.
-pub trait EventStore {
-    /// The type of event stored.
-    type Event;
-
+pub trait EventStore<E> {
     /// Publishes a list of events to the store.
     ///
     /// # Arguments
@@ -89,7 +88,7 @@ pub trait EventStore {
     /// A result indicating success or a `StorageError`.
     fn publish(
         &mut self,
-        events: Vec<Self::Event>,
+        events: Vec<E>,
         expected_version: AggregateStreamVersions,
     ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
 
@@ -106,7 +105,7 @@ pub trait EventStore {
         &self,
         query: EventStreamQuery,
     ) -> impl std::future::Future<
-        Output = Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError>,
+        Output = Result<impl Stream<Item = EventEnvelope<E>>, StorageError>,
     > + Send;
 }
 
@@ -205,7 +204,7 @@ pub async fn execute<C, S>(
 ) -> Result<(), C::Error>
 where
     C: Command,
-    S: EventStore<Event = C::Event>,
+    S: EventStore<C::Event>,
 {
     loop {
         // until either the command succeeds or handle_error tells us to stop
@@ -233,7 +232,7 @@ async fn build_state<C, S>(
 ) -> Result<(C::State, AggregateStreamVersions), StorageError>
 where
     C: Command,
-    S: EventStore<Event = C::Event>,
+    S: EventStore<C::Event>,
 {
     let mut version = AggregateStreamVersions(HashMap::new());
     let state = match command.event_stream_query() {
@@ -293,9 +292,9 @@ mod tests {
 
     #[derive(Clone, Debug, PartialEq)]
     enum DomainEvent {
-        FooHappened(u64),
-        BarHappened(u64),
-        BazHappened { id: u64, value: u64 },
+        FooHappened(u32),
+        BarHappened(u32),
+        BazHappened { id: u32, value: u32 },
         CommandRecovered,
     }
 
@@ -326,7 +325,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(stream_version, event)| {
-                    let stream_version = EventStreamVersion::new(stream_version as u64);
+                    let stream_version = EventStreamVersion::new(stream_version as u32);
                     EventEnvelope {
                         event: event.clone(),
                         stream_version: stream_version.clone(),
@@ -337,19 +336,17 @@ mod tests {
             self.expected_stream_query = Some(query);
         }
     }
-    impl EventStore for EventStoreImpl {
-        type Event = DomainEvent;
-
+    impl EventStore<DomainEvent> for EventStoreImpl {
         async fn publish(
             &mut self,
-            events: Vec<Self::Event>,
+            events: Vec<DomainEvent>,
             _expected_version: AggregateStreamVersions,
         ) -> Result<(), StorageError> {
             if self.should_fail {
                 self.should_fail = false;
                 return Err(StorageError::Other("Failed to store events".to_string()));
             }
-            let starting_version = match self.events.len() as u64 {
+            let starting_version = match self.events.len() as u32 {
                 0 => 0,
                 1 => 0,
                 x => x,
@@ -359,7 +356,7 @@ mod tests {
                 .enumerate()
                 .map(|(stream_version, event)| {
                     let stream_version =
-                        EventStreamVersion::new(starting_version + stream_version as u64);
+                        EventStreamVersion::new(starting_version + stream_version as u32);
                     EventEnvelope {
                         event: event.clone(),
                         stream_version: stream_version.clone(),
@@ -373,7 +370,7 @@ mod tests {
         async fn read_stream(
             &self,
             query: EventStreamQuery,
-        ) -> Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError> {
+        ) -> Result<impl Stream<Item = EventEnvelope<DomainEvent>>, StorageError> {
             let expected_query = &self.expected_stream_query;
             assert_eq!(Some(query), *expected_query);
             Ok(tokio_stream::iter(self.events.clone()))
@@ -430,7 +427,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct StatefulCommandState(u64);
+    struct StatefulCommandState(u32);
     impl AggregateState<DomainEvent> for StatefulCommandState {
         fn apply_event(self, event: DomainEvent) -> Self {
             match event {
@@ -441,9 +438,9 @@ mod tests {
             }
         }
     }
-    struct StatefulCommand(u64);
+    struct StatefulCommand(u32);
     impl StatefulCommand {
-        fn new(id: u64) -> Self {
+        fn new(id: u32) -> Self {
             StatefulCommand(id)
         }
     }

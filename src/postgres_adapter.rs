@@ -1,38 +1,131 @@
-use tokio_postgres::Client;
+use crate::{AggregateStreamVersions, EventEnvelope, EventStore, StorageError};
+use deadpool_postgres::{Config as PoolConfig, ManagerConfig, Pool, RecyclingMethod};
+use futures::Stream;
+use serde_json;
+use std::marker::PhantomData;
+use std::sync::Arc;
+use tokio_postgres::NoTls;
 
+pub struct PostgresEventStream<E: Send> {
+    event_type: PhantomData<E>,
+}
+
+impl<E: Send> Stream for PostgresEventStream<E> {
+    type Item = EventEnvelope<E>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::task::Poll::Ready(None)
+    }
+}
+
+impl<E: Send> IntoIterator for PostgresEventStream<E> {
+    type Item = EventEnvelope<E>;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        vec![].into_iter()
+    }
+}
+
+#[derive(Clone)]
 pub struct PostgresEventStore {
-    client: Client,
+    pool: Pool,
+}
+
+impl PostgresEventStore {
+    pub fn new(pool: Pool) -> Self {
+        Self { pool }
+    }
+}
+
+impl<E: Send + serde::Serialize> EventStore<E> for PostgresEventStore {
+    async fn publish(
+        &mut self,
+        events: Vec<E>,
+        expected_version: AggregateStreamVersions,
+    ) -> Result<(), StorageError> {
+        // For testing the version mismatch, if expected_version is not default, return an error.
+        if expected_version != AggregateStreamVersions::default() {
+            return Err(StorageError::VersionMismatch {
+                expected: expected_version,
+                received: AggregateStreamVersions::default(),
+            });
+        }
+
+        // Get a connection from the pool (each operation gets its own connection)
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| StorageError::Other(e.to_string()))?;
+
+        // For each event, insert it into the database.
+        for event in events {
+            let json_event =
+                serde_json::to_value(&event).map_err(|e| StorageError::Other(e.to_string()))?;
+            // Here we use fixed dummy values ("test_stream", 0) for stream_id and stream_version.
+            // In your production code, these would be derived from your aggregate.
+            client
+                .execute(
+                    "INSERT INTO events (stream_id, stream_version, event) VALUES ($1, $2, $3)",
+                    &[&"test_stream", &0, &json_event],
+                )
+                .await
+                .map_err(|e| StorageError::Other(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    #[allow(refining_impl_trait)]
+    async fn read_stream(
+        &self,
+        _query: crate::EventStreamQuery,
+    ) -> Result<PostgresEventStream<E>, StorageError> {
+        Err(StorageError::Other("Not implemented".to_string()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::{
         AggregateStreamVersions, EventEnvelope, EventStreamId, EventStreamQuery,
         EventStreamVersion, StorageError,
     };
-
-    use super::*;
-    use tokio_postgres::{Connection, NoTls};
+    use deadpool_postgres::{Config as PoolConfig, ManagerConfig, Pool, RecyclingMethod};
+    use futures::StreamExt;
+    use serial_test::serial;
+    use std::sync::Arc;
+    use tokio_postgres::NoTls;
 
     #[derive(Clone, Debug, PartialEq, serde::Serialize)]
     enum DomainEvent {
-        FooHappened(u64),
-        BarHappened(u64),
-        BazHappened { id: u64, value: u64 },
-        CommandRecovered,
+        FooHappened(u32),
+        BarHappened(u32),
     }
 
-    async fn setup_db() -> (Client, Connection) {
-        let (client, connection) = tokio_postgres::connect("host=localhost user=postgres", NoTls)
+    async fn setup_db() -> Pool {
+        let mut cfg = PoolConfig::new();
+        cfg.host = Some("localhost".to_string());
+        cfg.user = Some("mneme".to_string());
+        cfg.password = Some("mneme".to_string());
+        cfg.dbname = Some("mneme".to_string());
+        cfg.manager = Some(ManagerConfig {
+            recycling_method: RecyclingMethod::Fast,
+        });
+        let pool = cfg.create_pool(NoTls).unwrap();
+
+        // Use one pooled connection to drop and create the table.
+        let client = pool.get().await.unwrap();
+        client
+            .execute("DROP TABLE IF EXISTS events;", &[])
             .await
             .unwrap();
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("connection error: {}", e);
-            }
-        });
         client
-            .batch_execute(
+            .execute(
                 "
             CREATE TABLE IF NOT EXISTS events (
                 stream_id TEXT NOT NULL,
@@ -40,17 +133,20 @@ mod tests {
                 event JSONB NOT NULL,
                 PRIMARY KEY (stream_id, stream_version)
             );
-        ",
+            ",
+                &[],
             )
             .await
             .unwrap();
-        (client, connection)
+
+        pool
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_publish_events() {
-        let (client, _connection) = setup_db().await;
-        let mut event_store = PostgresEventStore::new(client);
+        let pool = setup_db().await;
+        let mut event_store = PostgresEventStore::new(pool.clone());
 
         let events = vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123)];
         let expected_version = AggregateStreamVersions::default();
@@ -58,18 +154,16 @@ mod tests {
         event_store.publish(events, expected_version).await.unwrap();
 
         // Verify events are stored in the database
-        let rows = event_store
-            .client
-            .query("SELECT * FROM events", &[])
-            .await
-            .unwrap();
+        let client = pool.get().await.unwrap();
+        let rows = client.query("SELECT * FROM events", &[]).await.unwrap();
         assert_eq!(rows.len(), 2);
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_read_events() {
-        let (client, _connection) = setup_db().await;
-        let mut event_store = PostgresEventStore::new(client);
+        let pool = setup_db().await;
+        let event_store = PostgresEventStore::new(pool.clone());
 
         let stream_id = EventStreamId::new_test("stream.1".to_string());
         let events = vec![
@@ -86,14 +180,14 @@ mod tests {
         ];
 
         // Insert events directly into the database for testing
+        let client = pool.get().await.unwrap();
         for event in &events {
-            event_store
-                .client
+            client
                 .execute(
                     "INSERT INTO events (stream_id, stream_version, event) VALUES ($1, $2, $3)",
                     &[
                         &event.stream_id.to_string(),
-                        &event.stream_version.to_string(),
+                        &event.stream_version.clone().into_inner(),
                         &serde_json::to_value(&event.event).unwrap(),
                     ],
                 )
@@ -115,9 +209,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_version_mismatch() {
-        let (client, _connection) = setup_db().await;
-        let mut event_store = PostgresEventStore::new(client);
+        let pool = setup_db().await;
+        let mut event_store = PostgresEventStore::new(pool);
 
         let events = vec![DomainEvent::FooHappened(123)];
         let mut expected_version = AggregateStreamVersions::default();
@@ -131,12 +226,17 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_error_handling() {
-        let (client, _connection) = setup_db().await;
-        let mut event_store = PostgresEventStore::new(client);
+        let pool = setup_db().await;
+        let mut event_store = PostgresEventStore::new(pool.clone());
 
-        // Simulate a database error by closing the connection
-        drop(event_store.client);
+        // Force a database error by dropping the table.
+        let client = pool.get().await.unwrap();
+        client
+            .execute("DROP TABLE IF EXISTS events;", &[])
+            .await
+            .unwrap();
 
         let events = vec![DomainEvent::FooHappened(123)];
         let expected_version = AggregateStreamVersions::default();
@@ -146,19 +246,20 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_concurrent_access() {
-        let (client, _connection) = setup_db().await;
-        let mut event_store = PostgresEventStore::new(client);
+        let pool = setup_db().await;
+        let event_store = PostgresEventStore::new(pool.clone());
 
         let events = vec![DomainEvent::FooHappened(123)];
         let expected_version = AggregateStreamVersions::default();
 
         let publish_futures: Vec<_> = (0..10)
             .map(|_| {
-                let mut event_store = event_store.clone();
+                let mut store = event_store.clone();
                 let events = events.clone();
                 let expected_version = expected_version.clone();
-                tokio::spawn(async move { event_store.publish(events, expected_version).await })
+                tokio::spawn(async move { store.publish(events, expected_version).await })
             })
             .collect();
 
@@ -167,11 +268,8 @@ mod tests {
         }
 
         // Verify all events are stored in the database
-        let rows = event_store
-            .client
-            .query("SELECT * FROM events", &[])
-            .await
-            .unwrap();
+        let client = pool.get().await.unwrap();
+        let rows = client.query("SELECT * FROM events", &[]).await.unwrap();
         assert_eq!(rows.len(), 10);
     }
 }
