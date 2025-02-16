@@ -1,6 +1,6 @@
 [package]
 name = "mneme"
-version = "0.3.11"
+version = "0.3.10"
 authors = ["John Wilger <john@johnwilger.com>"]
 edition = "2024"
 description = "An event-sourcing library for Rust projects."
