@@ -1,0 +1,70 @@
+name: Create Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+
+permissions:
+  contents: write
+
+jobs:
+  create_release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from Cargo.toml
+        id: extract_version
+        run: |
+          version=$(grep '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "::set-output name=version::$version"
+
+      - name: Fetch all tags
+        run: git fetch --tags
+
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          version=v${{ steps.extract_version.outputs.version }}
+          if git rev-parse "$version" >/dev/null 2>&1; then
+            echo "Tag $version already exists."
+            echo "::set-output name=tag_exists::true"
+          else
+            echo "Tag $version does not exist."
+            echo "::set-output name=tag::$version"
+            echo "::set-output name=tag_exists::false"
+          fi
+
+      - name: Get previous release tag
+        id: previous_release
+        run: |
+          prev_tag=$(git describe --tags --abbrev=0 HEAD^)
+          echo "::set-output name=prev_tag::$prev_tag"
+
+      - name: Get list of PRs since last release
+        id: get_prs
+        run: |
+          echo "## What's Changed" > release_notes.md
+          git log ${{ steps.previous_release.outputs.prev_tag }}..HEAD --merges --pretty=format:"* %s by @%an in %h" | grep 'Merge pull request' >> release_notes.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${{ steps.previous_release.outputs.prev_tag }}...${{ steps.check_tag.outputs.tag }}" >> release_notes.md
+          cat release_notes.md
+        shell: bash
+
+      - name: Create Release
+        if: steps.check_tag.outputs.tag_exists == 'false'
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ steps.check_tag.outputs.tag }}
+          release_name: ${{ steps.extract_version.outputs.version }}
+          body: ${{ steps.get_prs.outputs.release_notes }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
