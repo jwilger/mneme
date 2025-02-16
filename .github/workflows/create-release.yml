@@ -1,19 +1,21 @@
 name: Create Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "Cargo.toml"
+  workflow_run:
+    workflows: ["Rust"]
+    types:
+      - completed
+    conclusions:
+      - success
 
 permissions:
   contents: write
 
 jobs:
   create_release:
+    # Run only if we're on the main branch, and Cargo.toml was changed.
+    if: ${{ github.event.workflow_run.head_commit.modified && contains(github.event.workflow_run.head_commit.modified, 'Cargo.toml') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
