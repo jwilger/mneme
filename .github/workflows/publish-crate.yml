@@ -9,10 +9,11 @@ on:
       - "Create Release"
     types:
       - completed
+    conclusions:
+      - success
 
 jobs:
   publish:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
