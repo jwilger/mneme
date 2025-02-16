@@ -3,11 +3,6 @@ name: Publish Crate
 on:
   release:
     types: [published]
-  workflow_run:
-    workflows:
-      - "Create Release"
-    types:
-      - completed
 
 jobs:
   publish:
@@ -16,8 +11,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
-      - uses: ryohidaka/action-cargo-publish@v0.1.0
-        with:
-          path: "."
-          token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          dry-run: false
+      - name: Publish crate
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
