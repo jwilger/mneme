@@ -1,6 +1,6 @@
 use nutype::nutype;
+use std::error::Error;
 use std::fmt::Debug;
-use std::{collections::HashMap, error::Error};
 use tokio_stream::{Stream, StreamExt};
 
 /// Represents an error that occurs during storage operations.
@@ -8,8 +8,8 @@ use tokio_stream::{Stream, StreamExt};
 pub enum StorageError {
     #[error("Event stream version mismatch: expected {expected:?}, received {received:?}")]
     VersionMismatch {
-        expected: AggregateStreamVersions,
-        received: AggregateStreamVersions,
+        expected: EventStreamVersion,
+        received: EventStreamVersion,
     },
     #[error("Event-storage error: {0}")]
     Other(String),
@@ -49,26 +49,11 @@ impl EventStreamId {
 #[nutype(derive(Debug, Clone, PartialEq))]
 pub struct EventStreamVersion(u64);
 
-#[derive(Clone, Debug)]
-pub struct AggregateStreamVersions(HashMap<EventStreamId, EventStreamVersion>);
-impl AggregateStreamVersions {
-    pub fn update(&mut self, stream_id: EventStreamId, stream_version: EventStreamVersion) {
-        self.0.insert(stream_id, stream_version);
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<T> {
     pub event: T,
     pub stream_id: EventStreamId,
     pub stream_version: EventStreamVersion,
-}
-
-/// Represents a query for event streams.
-#[derive(Debug, Default, PartialEq)]
-pub struct EventStreamQuery {
-    /// Represents the list of event stream IDs to be queried.
-    pub stream_ids: Vec<EventStreamId>,
 }
 
 /// A trait representing an event store.
@@ -88,7 +73,7 @@ pub trait EventStore {
     fn publish(
         &mut self,
         events: Vec<Self::Event>,
-        expected_version: AggregateStreamVersions,
+        expected_version: Option<EventStreamVersion>,
     ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
 
     /// Reads the event stream based on the provided query.
@@ -102,7 +87,7 @@ pub trait EventStore {
     /// A result containing an iterator over the events or a `StorageError`.
     fn read_stream(
         &self,
-        query: EventStreamQuery,
+        stream_id: EventStreamId,
     ) -> impl std::future::Future<
         Output = Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError>,
     > + Send;
@@ -157,7 +142,7 @@ pub trait Command {
     /// A result containing a vector of events or an error.
     fn handle(&self, state: Self::State) -> Result<Vec<Self::Event>, Self::Error>;
 
-    fn event_stream_query(&self) -> Option<EventStreamQuery> {
+    fn event_stream_id(&self) -> Option<EventStreamId> {
         None
     }
 
@@ -228,20 +213,20 @@ where
 async fn build_state<C, S>(
     command: &C,
     event_store: &mut S,
-) -> Result<(C::State, AggregateStreamVersions), StorageError>
+) -> Result<(C::State, Option<EventStreamVersion>), StorageError>
 where
     C: Command,
     S: EventStore<Event = C::Event>,
 {
-    let mut version = AggregateStreamVersions(HashMap::new());
-    let state = match command.event_stream_query() {
+    let mut version = None;
+    let state = match command.event_stream_id() {
         None => C::State::default(),
         Some(stream_query) => {
             event_store
                 .read_stream(stream_query)
                 .await?
                 .fold(C::State::default(), |state, event_envelope| {
-                    version.update(event_envelope.stream_id, event_envelope.stream_version);
+                    version = Some(event_envelope.stream_version);
                     state.apply_event(event_envelope.event)
                 })
                 .await
@@ -304,14 +289,14 @@ mod tests {
     struct EventStoreImpl {
         events: Vec<EventEnvelope<DomainEvent>>,
         should_fail: bool,
-        expected_stream_query: Option<EventStreamQuery>,
+        expected_stream_id: Option<EventStreamId>,
     }
     impl EventStoreImpl {
         fn new() -> Self {
             EventStoreImpl {
                 events: vec![],
                 should_fail: false,
-                expected_stream_query: None,
+                expected_stream_id: None,
             }
         }
 
@@ -319,7 +304,7 @@ mod tests {
             self.should_fail = true;
         }
 
-        fn expect_stream_query(&mut self, query: EventStreamQuery, events: Vec<DomainEvent>) {
+        fn expect_stream_id(&mut self, stream_id: EventStreamId, events: Vec<DomainEvent>) {
             self.events = events
                 .iter()
                 .enumerate()
@@ -332,7 +317,7 @@ mod tests {
                     }
                 })
                 .collect();
-            self.expected_stream_query = Some(query);
+            self.expected_stream_id = Some(stream_id);
         }
     }
     impl EventStore for EventStoreImpl {
@@ -341,7 +326,7 @@ mod tests {
         async fn publish(
             &mut self,
             events: Vec<Self::Event>,
-            _expected_version: AggregateStreamVersions,
+            _expected_version: Option<EventStreamVersion>,
         ) -> Result<(), StorageError> {
             if self.should_fail {
                 self.should_fail = false;
@@ -370,10 +355,10 @@ mod tests {
 
         async fn read_stream(
             &self,
-            query: EventStreamQuery,
+            stream_id: EventStreamId,
         ) -> Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError> {
-            let expected_query = &self.expected_stream_query;
-            assert_eq!(Some(query), *expected_query);
+            let expected_query = &self.expected_stream_id;
+            assert_eq!(Some(stream_id), *expected_query);
             Ok(tokio_stream::iter(self.events.clone()))
         }
     }
@@ -458,10 +443,8 @@ mod tests {
             }])
         }
 
-        fn event_stream_query(&self) -> Option<EventStreamQuery> {
-            Some(EventStreamQuery {
-                stream_ids: vec![EventStreamId::new_test(format!("thing.{}", self.0))],
-            })
+        fn event_stream_id(&self) -> Option<EventStreamId> {
+            Some(EventStreamId::try_new(format!("thing.{}", self.0)).unwrap())
         }
     }
 
@@ -544,11 +527,9 @@ mod tests {
     #[tokio::test]
     async fn existing_events_are_available_to_handler() {
         let mut event_store = EventStoreImpl::new();
-        let stream_query = EventStreamQuery {
-            stream_ids: vec![EventStreamId::new_test("thing.123".into())],
-        };
-        event_store.expect_stream_query(
-            stream_query,
+        let stream_id = EventStreamId::try_new("thing.123".to_string()).unwrap();
+        event_store.expect_stream_id(
+            stream_id,
             vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123)],
         );
 
