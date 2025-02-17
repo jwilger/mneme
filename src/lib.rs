@@ -1,3 +1,7 @@
+mod kurrent_adapter;
+
+pub use crate::kurrent_adapter::Kurrent;
+
 use nutype::nutype;
 use std::error::Error;
 use std::fmt::Debug;
@@ -46,8 +50,8 @@ impl EventStreamId {
     }
 }
 
-#[nutype(derive(Debug, Clone, PartialEq))]
-pub struct EventStreamVersion(u64);
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventStreamVersion(pub u64);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventEnvelope<T> {
@@ -306,7 +310,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(stream_version, event)| {
-                    let stream_version = EventStreamVersion::new(stream_version as u64);
+                    let stream_version = EventStreamVersion(stream_version as u64);
                     EventEnvelope {
                         event: event.clone(),
                         stream_version: stream_version.clone(),
@@ -337,7 +341,7 @@ mod tests {
                 .enumerate()
                 .map(|(stream_version, event)| {
                     let stream_version =
-                        EventStreamVersion::new(starting_version + stream_version as u64);
+                        EventStreamVersion(starting_version + stream_version as u64);
                     EventEnvelope {
                         event: event.clone(),
                         stream_version: stream_version.clone(),
@@ -476,12 +480,12 @@ mod tests {
                         EventEnvelope {
                             event: DomainEvent::FooHappened(123),
                             stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(0),
+                            stream_version: EventStreamVersion(0),
                         },
                         EventEnvelope {
                             event: DomainEvent::BarHappened(123),
                             stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(1),
+                            stream_version: EventStreamVersion(1),
                         },
                     ]
                 )
@@ -512,7 +516,7 @@ mod tests {
                 vec![EventEnvelope {
                     event: DomainEvent::CommandRecovered,
                     stream_id: STREAM_ID.clone(),
-                    stream_version: EventStreamVersion::new(0),
+                    stream_version: EventStreamVersion(0),
                 },]
             ),
             other => panic!("Unexpected result: {:?}", other),
@@ -537,12 +541,12 @@ mod tests {
                         EventEnvelope {
                             event: DomainEvent::FooHappened(123),
                             stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(0),
+                            stream_version: EventStreamVersion(0),
                         },
                         EventEnvelope {
                             event: DomainEvent::BarHappened(123),
                             stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(1),
+                            stream_version: EventStreamVersion(1),
                         },
                         EventEnvelope {
                             event: DomainEvent::BazHappened {
@@ -550,7 +554,7 @@ mod tests {
                                 value: 246,
                             },
                             stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(2),
+                            stream_version: EventStreamVersion(2),
                         },
                     ]
                 )
