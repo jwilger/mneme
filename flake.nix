@@ -35,6 +35,7 @@
             pkg-config
             rust-analyzer
             rustToolchain
+            just
           ];
 
           env = {

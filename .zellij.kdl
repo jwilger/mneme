@@ -17,8 +17,8 @@ layout {
 
   tab name="2 servers" {
     pane split_direction="vertical" {
-      pane name="postgres" command="docker" {
-        args "run" "--name" "esdb-node" "-it" "-p" "2113:2113" "docker.eventstore.com/eventstore/eventstoredb-ee" "--insecure" "--run-projections=All" "--enable-atom-pub-over-http"
+      pane name="Kurrent" command="just" {
+        args "kurrent"
       }
 		}
 	}
