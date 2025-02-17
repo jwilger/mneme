@@ -57,10 +57,7 @@ pub struct EventEnvelope<T> {
 }
 
 /// A trait representing an event store.
-pub trait EventStore {
-    /// The type of event stored.
-    type Event;
-
+pub trait EventStore<E> {
     /// Publishes a list of events to the store.
     ///
     /// # Arguments
@@ -72,7 +69,7 @@ pub trait EventStore {
     /// A result indicating success or a `StorageError`.
     fn publish(
         &mut self,
-        events: Vec<Self::Event>,
+        events: Vec<E>,
         expected_version: Option<EventStreamVersion>,
     ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
 
@@ -89,7 +86,7 @@ pub trait EventStore {
         &self,
         stream_id: EventStreamId,
     ) -> impl std::future::Future<
-        Output = Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError>,
+        Output = Result<impl Stream<Item = EventEnvelope<E>>, StorageError>,
     > + Send;
 }
 
@@ -188,7 +185,7 @@ pub async fn execute<C, S>(
 ) -> Result<(), C::Error>
 where
     C: Command,
-    S: EventStore<Event = C::Event>,
+    S: EventStore<C::Event>,
 {
     loop {
         // until either the command succeeds or handle_error tells us to stop
@@ -216,7 +213,7 @@ async fn build_state<C, S>(
 ) -> Result<(C::State, Option<EventStreamVersion>), StorageError>
 where
     C: Command,
-    S: EventStore<Event = C::Event>,
+    S: EventStore<C::Event>,
 {
     let mut version = None;
     let state = match command.event_stream_id() {
@@ -320,12 +317,10 @@ mod tests {
             self.expected_stream_id = Some(stream_id);
         }
     }
-    impl EventStore for EventStoreImpl {
-        type Event = DomainEvent;
-
+    impl EventStore<DomainEvent> for EventStoreImpl {
         async fn publish(
             &mut self,
-            events: Vec<Self::Event>,
+            events: Vec<DomainEvent>,
             _expected_version: Option<EventStreamVersion>,
         ) -> Result<(), StorageError> {
             if self.should_fail {
@@ -356,7 +351,7 @@ mod tests {
         async fn read_stream(
             &self,
             stream_id: EventStreamId,
-        ) -> Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError> {
+        ) -> Result<impl Stream<Item = EventEnvelope<DomainEvent>>, StorageError> {
             let expected_query = &self.expected_stream_id;
             assert_eq!(Some(stream_id), *expected_query);
             Ok(tokio_stream::iter(self.events.clone()))
