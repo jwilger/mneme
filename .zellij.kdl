@@ -18,7 +18,7 @@ layout {
   tab name="2 servers" {
     pane split_direction="vertical" {
       pane name="postgres" command="docker" {
-        args "run" "--name" "mneme_db" "-e" "POSTGRES_USER=mneme" "-e" "POSTGRES_PASSWORD=mneme" "-e" "POSTGRES_DB=mneme" "-v" "./.pg_data:/var/lib/postgresql/data" "--rm" "-p" "5432:5432" "postgres:17"
+        args "run" "--name" "esdb-node" "-it" "-p" "2113:2113" "docker.eventstore.com/eventstore/eventstoredb-ee" "--insecure" "--run-projections=All" "--enable-atom-pub-over-http"
       }
 		}
 	}
