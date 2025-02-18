@@ -80,7 +80,7 @@ pub trait EventStore<E> {
     /// A result containing an iterator over the events or a `StorageError`.
     fn read_stream(
         &self,
-        stream_id: EventStreamId,
+        stream_id: &EventStreamId,
     ) -> impl std::future::Future<Output = Result<impl Stream<Item = E>, StorageError>> + Send;
 }
 
@@ -212,9 +212,9 @@ where
     let mut version = 0;
     let state = match command.event_stream_id() {
         None => C::State::default(),
-        Some(stream_query) => {
+        Some(stream_id) => {
             event_store
-                .read_stream(stream_query)
+                .read_stream(&stream_id)
                 .await?
                 .fold(C::State::default(), |state, event| {
                     version += 1;
@@ -313,10 +313,10 @@ mod tests {
 
         async fn read_stream(
             &self,
-            stream_id: EventStreamId,
+            stream_id: &EventStreamId,
         ) -> Result<impl Stream<Item = DomainEvent>, StorageError> {
-            let expected_query = &self.expected_stream_id;
-            assert_eq!(Some(stream_id), *expected_query);
+            let expected_stream_id = self.expected_stream_id.clone().unwrap();
+            assert_eq!(stream_id, &expected_stream_id);
             Ok(tokio_stream::iter(self.events.clone()))
         }
     }
