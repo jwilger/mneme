@@ -1,3 +1,5 @@
+pub mod kurrent_adapter;
+
 use nutype::nutype;
 use std::error::Error;
 use std::fmt::Debug;
@@ -38,6 +40,7 @@ impl EventStreamId {
     /// # Panics
     ///
     /// This function will panic if the provided value is not a valid event stream ID.
+    #[allow(dead_code)]
     fn new_test(value: String) -> Self {
         match Self::try_new(value) {
             Ok(id) => id,
@@ -46,15 +49,8 @@ impl EventStreamId {
     }
 }
 
-#[nutype(derive(Debug, Clone, PartialEq))]
-pub struct EventStreamVersion(u64);
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct EventEnvelope<T> {
-    pub event: T,
-    pub stream_id: EventStreamId,
-    pub stream_version: EventStreamVersion,
-}
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventStreamVersion(pub u64);
 
 /// A trait representing an event store.
 pub trait EventStore<E> {
@@ -85,9 +81,7 @@ pub trait EventStore<E> {
     fn read_stream(
         &self,
         stream_id: EventStreamId,
-    ) -> impl std::future::Future<
-        Output = Result<impl Stream<Item = EventEnvelope<E>>, StorageError>,
-    > + Send;
+    ) -> impl std::future::Future<Output = Result<impl Stream<Item = E>, StorageError>> + Send;
 }
 
 /// A trait representing the state of an aggregate that can be modified by applying events.
@@ -215,28 +209,27 @@ where
     C: Command,
     S: EventStore<C::Event>,
 {
-    let mut version = None;
+    let mut version = 0;
     let state = match command.event_stream_id() {
         None => C::State::default(),
         Some(stream_query) => {
             event_store
                 .read_stream(stream_query)
                 .await?
-                .fold(C::State::default(), |state, event_envelope| {
-                    version = Some(event_envelope.stream_version);
-                    state.apply_event(event_envelope.event)
+                .fold(C::State::default(), |state, event| {
+                    version += 1;
+                    state.apply_event(event)
                 })
                 .await
         }
     };
-    Ok((state, version))
+    Ok((state, Some(EventStreamVersion(version))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fmt::Debug;
-    use std::sync::LazyLock;
     use thiserror::Error;
 
     #[derive(Clone, Debug, Error)]
@@ -279,12 +272,9 @@ mod tests {
         CommandRecovered,
     }
 
-    static STREAM_ID: LazyLock<EventStreamId> =
-        LazyLock::new(|| EventStreamId::new_test("thing.123".to_string()));
-
     #[derive(Debug, PartialEq)]
     struct EventStoreImpl {
-        events: Vec<EventEnvelope<DomainEvent>>,
+        events: Vec<DomainEvent>,
         should_fail: bool,
         expected_stream_id: Option<EventStreamId>,
     }
@@ -301,19 +291,7 @@ mod tests {
             self.should_fail = true;
         }
 
-        fn expect_stream_id(&mut self, stream_id: EventStreamId, events: Vec<DomainEvent>) {
-            self.events = events
-                .iter()
-                .enumerate()
-                .map(|(stream_version, event)| {
-                    let stream_version = EventStreamVersion::new(stream_version as u64);
-                    EventEnvelope {
-                        event: event.clone(),
-                        stream_version: stream_version.clone(),
-                        stream_id: STREAM_ID.clone(),
-                    }
-                })
-                .collect();
+        fn expect_stream_id(&mut self, stream_id: EventStreamId) {
             self.expected_stream_id = Some(stream_id);
         }
     }
@@ -327,31 +305,16 @@ mod tests {
                 self.should_fail = false;
                 return Err(StorageError::Other("Failed to store events".to_string()));
             }
-            let starting_version = match self.events.len() as u64 {
-                0 => 0,
-                1 => 0,
-                x => x,
-            };
             events
                 .iter()
-                .enumerate()
-                .map(|(stream_version, event)| {
-                    let stream_version =
-                        EventStreamVersion::new(starting_version + stream_version as u64);
-                    EventEnvelope {
-                        event: event.clone(),
-                        stream_version: stream_version.clone(),
-                        stream_id: STREAM_ID.clone(),
-                    }
-                })
-                .for_each(|event| self.events.push(event));
+                .for_each(|event| self.events.push(event.to_owned()));
             Ok(())
         }
 
         async fn read_stream(
             &self,
             stream_id: EventStreamId,
-        ) -> Result<impl Stream<Item = EventEnvelope<DomainEvent>>, StorageError> {
+        ) -> Result<impl Stream<Item = DomainEvent>, StorageError> {
             let expected_query = &self.expected_stream_id;
             assert_eq!(Some(stream_id), *expected_query);
             Ok(tokio_stream::iter(self.events.clone()))
@@ -472,18 +435,7 @@ mod tests {
             Ok(()) => {
                 assert_eq!(
                     event_store.events,
-                    vec![
-                        EventEnvelope {
-                            event: DomainEvent::FooHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(0),
-                        },
-                        EventEnvelope {
-                            event: DomainEvent::BarHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(1),
-                        },
-                    ]
+                    vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123),]
                 )
             }
             other => panic!("Unexpected result: {:?}", other),
@@ -507,14 +459,7 @@ mod tests {
         event_store.produce_error_for_next_publish();
         let command = RecoveringCommand::new();
         match execute(command, &mut event_store, None).await {
-            Ok(()) => assert_eq!(
-                event_store.events,
-                vec![EventEnvelope {
-                    event: DomainEvent::CommandRecovered,
-                    stream_id: STREAM_ID.clone(),
-                    stream_version: EventStreamVersion::new(0),
-                },]
-            ),
+            Ok(()) => assert_eq!(event_store.events, vec![DomainEvent::CommandRecovered]),
             other => panic!("Unexpected result: {:?}", other),
         }
     }
@@ -523,10 +468,8 @@ mod tests {
     async fn existing_events_are_available_to_handler() {
         let mut event_store = EventStoreImpl::new();
         let stream_id = EventStreamId::try_new("thing.123".to_string()).unwrap();
-        event_store.expect_stream_id(
-            stream_id,
-            vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123)],
-        );
+        event_store.expect_stream_id(stream_id);
+        event_store.events = vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123)];
 
         let command = StatefulCommand::new(123);
         match execute(command, &mut event_store, None).await {
@@ -534,24 +477,12 @@ mod tests {
                 assert_eq!(
                     event_store.events,
                     vec![
-                        EventEnvelope {
-                            event: DomainEvent::FooHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(0),
-                        },
-                        EventEnvelope {
-                            event: DomainEvent::BarHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(1),
-                        },
-                        EventEnvelope {
-                            event: DomainEvent::BazHappened {
-                                id: 123,
-                                value: 246,
-                            },
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(2),
-                        },
+                        DomainEvent::FooHappened(123),
+                        DomainEvent::BarHappened(123),
+                        DomainEvent::BazHappened {
+                            id: 123,
+                            value: 246,
+                        }
                     ]
                 )
             }
