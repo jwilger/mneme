@@ -15,6 +15,9 @@
       forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
         pkgs = import nixpkgs {
           inherit system;
+          config = {
+            allowUnfree = true;
+          };
           overlays = [ rust-overlay.overlays.default self.overlays.default ];
         };
       });
@@ -36,6 +39,7 @@
             rust-analyzer
             rustToolchain
             just
+            goose-cli
           ];
 
           env = {

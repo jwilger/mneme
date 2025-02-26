@@ -1,492 +1,358 @@
-pub mod kurrent_adapter;
+//! # Mneme
+//!
+//! Mneme is an event-sourcing library for Rust that provides a robust foundation for building
+//! event-sourced systems. It offers a clean, type-safe API for managing event streams, processing
+//! commands, and maintaining aggregate state.
+//!
+//! ## Core Concepts
+//!
+//! ### Events
+//!
+//! Events are immutable facts that represent something that happened in your system. They are the
+//! source of truth in an event-sourced system.
+//!
+//! ```rust
+//! use mneme::Event;
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! enum OrderEvent {
+//!     Created {
+//!         order_id: String,
+//!         customer_id: String,
+//!         items: Vec<String>,
+//!     },
+//!     ItemAdded {
+//!         item_id: String,
+//!     },
+//! }
+//!
+//! impl Event for OrderEvent {
+//!     fn event_type(&self) -> String {
+//!         match self {
+//!             OrderEvent::Created { .. } => "OrderCreated".to_string(),
+//!             OrderEvent::ItemAdded { .. } => "OrderItemAdded".to_string(),
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ### Commands
+//!
+//! Commands represent intentions to change the system state. They are validated and processed to
+//! generate events.
+//!
+//! ```rust
+//! use mneme::{Command, Event, AggregateState};
+//! use serde::{Serialize, Deserialize};
+//!
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! enum UserEvent {
+//!     Created { id: String }
+//! }
+//!
+//! impl Event for UserEvent {
+//!     fn event_type(&self) -> String {
+//!         match self {
+//!             UserEvent::Created { .. } => "UserCreated".to_string()
+//!         }
+//!     }
+//! }
+//!
+//! #[derive(Debug, Clone)]
+//! struct User {
+//!     id: Option<String>,
+//! }
+//!
+//! impl AggregateState<UserEvent> for User {
+//!     fn apply(&self, event: UserEvent) -> Self {
+//!         match event {
+//!             UserEvent::Created { id } => User { id: Some(id) }
+//!         }
+//!     }
+//! }
+//!
+//! #[derive(Clone)]
+//! struct CreateUser {
+//!     id: String,
+//!     state: User,
+//! }
+//!
+//! #[derive(Debug)]
+//! struct CommandError(String);
+//!
+//! impl std::fmt::Display for CommandError {
+//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//!         write!(f, "{}", self.0)
+//!     }
+//! }
+//!
+//! impl std::error::Error for CommandError {}
+//!
+//! impl Command<UserEvent> for CreateUser {
+//!     type State = User;
+//!     type Error = CommandError;
+//!
+//!     fn empty_state(&self) -> Self::State {
+//!         User { id: None }
+//!     }
+//!
+//!     fn handle(&self) -> Result<Vec<UserEvent>, Self::Error> {
+//!         Ok(vec![UserEvent::Created {
+//!             id: self.id.clone()
+//!         }])
+//!     }
+//!
+//!     fn event_stream_id(&self) -> mneme::EventStreamId {
+//!         mneme::EventStreamId::new()
+//!     }
+//!
+//!     fn get_state(&self) -> Self::State {
+//!         self.state.clone()
+//!     }
+//!
+//!     fn set_state(&self, state: Self::State) -> Self {
+//!         Self {
+//!             state,
+//!             ..self.clone()
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ### Event Store
+//!
+//! The event store is responsible for persisting and retrieving events.
+//!
+//! ```rust,no_run
+//! use mneme::{EventStore, ConnectionSettings, Event, EventStream};
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! enum OrderEvent {
+//!     Created { id: String }
+//! }
+//!
+//! impl Event for OrderEvent {
+//!     fn event_type(&self) -> String {
+//!         match self {
+//!             OrderEvent::Created { .. } => "OrderCreated".to_string()
+//!         }
+//!     }
+//! }
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! // Initialize settings from environment variables
+//! let settings = ConnectionSettings::from_env()?;
+//! let store = EventStore::new(&settings)?;
+//!
+//! // Read a stream
+//! let stream_id = mneme::EventStreamId::new();
+//! let mut stream: EventStream<OrderEvent> = store
+//!     .stream_builder(stream_id.clone())
+//!     .max_count(100)
+//!     .read()
+//!     .await?;
+//!
+//! while let Some((event, version)) = stream.next().await? {
+//!     println!("Event at version {}: {:?}", version.value(), event);
+//! }
+//!
+//! // Write to a stream
+//! let events = vec![OrderEvent::Created {
+//!     id: "order-123".to_string()
+//! }];
+//!
+//! store
+//!     .stream_writer(stream_id)
+//!     .append(events)
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ### Aggregate State
+//!
+//! Aggregates represent the current state of your domain objects, built by applying events in sequence.
+//!
+//! ```rust
+//! use mneme::AggregateState;
+//! use serde::{Serialize, Deserialize};
+//! use mneme::Event;
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! enum AccountEvent {
+//!     Created { balance: u64 },
+//!     Deposited { amount: u64 },
+//! }
+//!
+//! impl Event for AccountEvent {
+//!     fn event_type(&self) -> String {
+//!         match self {
+//!             AccountEvent::Created { .. } => "AccountCreated".to_string(),
+//!             AccountEvent::Deposited { .. } => "AccountDeposited".to_string(),
+//!         }
+//!     }
+//! }
+//!
+//! #[derive(Debug, Clone)]
+//! struct Account {
+//!     balance: u64,
+//! }
+//!
+//! impl AggregateState<AccountEvent> for Account {
+//!     fn apply(&self, event: AccountEvent) -> Self {
+//!         match event {
+//!             AccountEvent::Created { balance } => Account { balance },
+//!             AccountEvent::Deposited { amount } => Account {
+//!                 balance: self.balance + amount,
+//!             },
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## Example: Bank Account
+//!
+//! Here's a complete example showing how all the pieces fit together:
+//!
+//! ```rust,no_run
+//! use mneme::{Command, Event, AggregateState, EventStreamId, EventStore, ConnectionSettings};
+//! use serde::{Serialize, Deserialize};
+//!
+//! // Events
+//! #[derive(Debug, Serialize, Deserialize)]
+//! enum BankAccountEvent {
+//!     Created { id: String, balance: u64 },
+//!     Deposited { amount: u64 },
+//! }
+//!
+//! impl Event for BankAccountEvent {
+//!     fn event_type(&self) -> String {
+//!         match self {
+//!             BankAccountEvent::Created { .. } => "BankAccountCreated".to_string(),
+//!             BankAccountEvent::Deposited { .. } => "AmountDeposited".to_string(),
+//!         }
+//!     }
+//! }
+//!
+//! // State
+//! #[derive(Debug, Clone)]
+//! struct BankAccount {
+//!     id: Option<String>,
+//!     balance: u64,
+//! }
+//!
+//! impl Default for BankAccount {
+//!     fn default() -> Self {
+//!         Self {
+//!             id: None,
+//!             balance: 0,
+//!         }
+//!     }
+//! }
+//!
+//! impl AggregateState<BankAccountEvent> for BankAccount {
+//!     fn apply(&self, event: BankAccountEvent) -> Self {
+//!         match event {
+//!             BankAccountEvent::Created { id, balance } => BankAccount {
+//!                 id: Some(id),
+//!                 balance,
+//!             },
+//!             BankAccountEvent::Deposited { amount } => BankAccount {
+//!                 balance: self.balance + amount,
+//!                 ..self.clone()
+//!             },
+//!         }
+//!     }
+//! }
+//!
+//! // Commands
+//! #[derive(Clone)]
+//! struct CreateAccount {
+//!     id: String,
+//!     initial_balance: u64,
+//!     state: BankAccount,
+//! }
+//!
+//! #[derive(Debug)]
+//! struct CommandError(String);
+//!
+//! impl std::fmt::Display for CommandError {
+//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//!         write!(f, "{}", self.0)
+//!     }
+//! }
+//!
+//! impl std::error::Error for CommandError {}
+//!
+//! impl Command<BankAccountEvent> for CreateAccount {
+//!     type State = BankAccount;
+//!     type Error = CommandError;
+//!
+//!     fn empty_state(&self) -> Self::State {
+//!         BankAccount::default()
+//!     }
+//!
+//!     fn handle(&self) -> Result<Vec<BankAccountEvent>, Self::Error> {
+//!         Ok(vec![BankAccountEvent::Created {
+//!             id: self.id.clone(),
+//!             balance: self.initial_balance,
+//!         }])
+//!     }
+//!
+//!     fn event_stream_id(&self) -> EventStreamId {
+//!         EventStreamId::new()
+//!     }
+//!
+//!     fn get_state(&self) -> Self::State {
+//!         self.state.clone()
+//!     }
+//!
+//!     fn set_state(&self, state: Self::State) -> Self {
+//!         Self {
+//!             state,
+//!             ..self.clone()
+//!         }
+//!     }
+//! }
+//!
+//! # async fn example() -> Result<(), mneme::Error> {
+//! // Usage
+//! let settings = ConnectionSettings::from_env()?;
+//! let store = EventStore::new(&settings)?;
+//!
+//! let command = CreateAccount {
+//!     id: "acc123".to_string(),
+//!     initial_balance: 1000,
+//!     state: BankAccount::default(),
+//! };
+//!
+//! let stream_id = command.event_stream_id();
+//! let events = command.handle().map_err(|e| mneme::Error::CommandFailed {
+//!     message: e.to_string(),
+//!     attempt: 1,
+//!     max_attempts: 1,
+//!     source: Box::new(e),
+//! })?;
+//!
+//! store.stream_writer(stream_id)
+//!     .append(events).await?;
+//! # Ok(())
+//! # }
+//! ```
 
-use nutype::nutype;
-use std::error::Error;
-use std::fmt::Debug;
-use tokio_stream::{Stream, StreamExt};
+mod command;
+pub mod error;
+mod event;
+mod store;
 
-/// Represents an error that occurs during storage operations.
-#[derive(Clone, thiserror::Error, Debug)]
-pub enum StorageError {
-    #[error("Event stream version mismatch: expected {expected:?}, received {received:?}")]
-    VersionMismatch {
-        expected: EventStreamVersion,
-        received: EventStreamVersion,
-    },
-    #[error("Event-storage error: {0}")]
-    Other(String),
-}
-
-/// Represents an identifier for an event stream.
-///
-/// This struct ensures that the identifier is trimmed and not empty.
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Clone, Debug, Eq, Hash, PartialEq)
-)]
-pub struct EventStreamId(String);
-
-#[cfg(test)]
-impl EventStreamId {
-    /// Creates a new `EventStreamId` for testing purposes.
-    ///
-    /// Not available in the public API.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - A string value to be used as the event stream ID.
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if the provided value is not a valid event stream ID.
-    #[allow(dead_code)]
-    fn new_test(value: String) -> Self {
-        match Self::try_new(value) {
-            Ok(id) => id,
-            Err(_) => panic!("Invalid event stream ID"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EventStreamVersion(pub u64);
-
-/// A trait representing an event store.
-pub trait EventStore<E> {
-    /// Publishes a list of events to the store.
-    ///
-    /// # Arguments
-    ///
-    /// * `events` - A vector of events to be published.
-    ///
-    /// # Returns
-    ///
-    /// A result indicating success or a `StorageError`.
-    fn publish(
-        &mut self,
-        events: Vec<E>,
-        expected_version: Option<EventStreamVersion>,
-    ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
-
-    /// Reads the event stream based on the provided query.
-    ///
-    /// # Arguments
-    ///
-    /// * `query` - An optional `EventStreamQuery` to filter the events.
-    ///
-    /// # Returns
-    ///
-    /// A result containing an iterator over the events or a `StorageError`.
-    fn read_stream(
-        &self,
-        stream_id: &EventStreamId,
-    ) -> impl std::future::Future<Output = Result<impl Stream<Item = E>, StorageError>> + Send;
-}
-
-/// A trait representing the state of an aggregate that can be modified by applying events.
-///
-/// # Type Parameters
-///
-/// * `E` - The type of events that can be applied to the state.
-pub trait AggregateState<E>: Default {
-    /// Applies an event to the current state and returns the new state.
-    ///
-    /// # Arguments
-    ///
-    /// * `event` - The event to be applied.
-    ///
-    /// # Returns
-    ///
-    /// The new state after the event has been applied.
-    fn apply_event(self, event: E) -> Self;
-}
-
-/// A struct representing a stateless aggregate.
-#[derive(Default)]
-pub struct Stateless;
-
-/// Implementation of the `AggregateState` trait for the `Stateless` struct.
-///
-/// This implementation does not modify the state when an event is applied.
-impl<E> AggregateState<E> for Stateless {
-    fn apply_event(self, _event: E) -> Self {
-        Self
-    }
-}
-
-/// A trait representing a command that can be handled.
-pub trait Command {
-    /// The type of event produced by the command.
-    type Event;
-    /// The type of error that can occur while handling the command.
-    type Error: Error + Clone + From<StorageError>;
-    /// The context provided in case of a failure.
-    type FailureContext;
-    /// The aggregate state into which events are folded for stateful commands
-    type State: AggregateState<Self::Event>;
-
-    /// Handles the command and produces a list of events.
-    ///
-    /// # Returns
-    ///
-    /// A result containing a vector of events or an error.
-    fn handle(&self, state: Self::State) -> Result<Vec<Self::Event>, Self::Error>;
-
-    fn event_stream_id(&self) -> Option<EventStreamId> {
-        None
-    }
-
-    /// Handles an error that occurred while processing the command.
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - The error that occurred.
-    /// * `failure_context` - An optional context for the failure.
-    ///
-    /// # Returns
-    ///
-    /// A result containing an optional failure context or an error.
-    fn handle_error(
-        &self,
-        _error: &Self::Error,
-        _failure_context: Option<Self::FailureContext>,
-    ) -> Result<Option<Self::FailureContext>, Self::Error> {
-        Ok(None)
-    }
-}
-
-/// Executes a command and publishes the resulting events to an event store.
-///
-/// # Arguments
-///
-/// * `command` - The command to be executed.
-/// * `event_store` - The event store where events will be published.
-/// * `failure_context` - An optional context for handling failures.
-///
-/// # Returns
-///
-/// A result indicating success or an error.
-///
-/// # Type Parameters
-///
-/// * `C` - The type of the command.
-/// * `S` - The type of the event store.
-pub async fn execute<C, S>(
-    command: C,
-    event_store: &mut S,
-    mut failure_context: Option<C::FailureContext>,
-) -> Result<(), C::Error>
-where
-    C: Command,
-    S: EventStore<C::Event>,
-{
-    loop {
-        // until either the command succeeds or handle_error tells us to stop
-        let (state, expected_version) = build_state(&command, event_store).await?;
-        let events = command.handle(state)?;
-        match event_store
-            .publish(events, expected_version)
-            .await
-            .map_err(C::Error::from)
-        {
-            Err(error) => match command.handle_error(&error, failure_context)? {
-                Some(updated_failure_context) => {
-                    failure_context = Some(updated_failure_context);
-                }
-                None => return Err(error),
-            },
-            Ok(_) => return Ok(()),
-        }
-    }
-}
-
-async fn build_state<C, S>(
-    command: &C,
-    event_store: &mut S,
-) -> Result<(C::State, Option<EventStreamVersion>), StorageError>
-where
-    C: Command,
-    S: EventStore<C::Event>,
-{
-    let mut version = 0;
-    let state = match command.event_stream_id() {
-        None => C::State::default(),
-        Some(stream_id) => {
-            event_store
-                .read_stream(&stream_id)
-                .await?
-                .fold(C::State::default(), |state, event| {
-                    version += 1;
-                    state.apply_event(event)
-                })
-                .await
-        }
-    };
-    Ok((state, Some(EventStreamVersion(version))))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fmt::Debug;
-    use thiserror::Error;
-
-    #[derive(Clone, Debug, Error)]
-    enum ExecutionError {
-        #[error("Storage error: {0}")]
-        StorageError(#[from] StorageError),
-        #[error("Rejected")]
-        Rejected,
-    }
-
-    struct FailureContext;
-
-    struct NoopCommand {
-        id: i32,
-    }
-    impl NoopCommand {
-        fn new(id: i32) -> Self {
-            NoopCommand { id }
-        }
-    }
-    impl Command for NoopCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
-        type State = Stateless;
-
-        fn handle(&self, _state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            match self.id {
-                456 => Err(ExecutionError::Rejected),
-                _ => Ok(vec![]),
-            }
-        }
-    }
-
-    #[derive(Clone, Debug, PartialEq)]
-    enum DomainEvent {
-        FooHappened(u64),
-        BarHappened(u64),
-        BazHappened { id: u64, value: u64 },
-        CommandRecovered,
-    }
-
-    #[derive(Debug, PartialEq)]
-    struct EventStoreImpl {
-        events: Vec<DomainEvent>,
-        should_fail: bool,
-        expected_stream_id: Option<EventStreamId>,
-    }
-    impl EventStoreImpl {
-        fn new() -> Self {
-            EventStoreImpl {
-                events: vec![],
-                should_fail: false,
-                expected_stream_id: None,
-            }
-        }
-
-        fn produce_error_for_next_publish(&mut self) {
-            self.should_fail = true;
-        }
-
-        fn expect_stream_id(&mut self, stream_id: EventStreamId) {
-            self.expected_stream_id = Some(stream_id);
-        }
-    }
-    impl EventStore<DomainEvent> for EventStoreImpl {
-        async fn publish(
-            &mut self,
-            events: Vec<DomainEvent>,
-            _expected_version: Option<EventStreamVersion>,
-        ) -> Result<(), StorageError> {
-            if self.should_fail {
-                self.should_fail = false;
-                return Err(StorageError::Other("Failed to store events".to_string()));
-            }
-            events
-                .iter()
-                .for_each(|event| self.events.push(event.to_owned()));
-            Ok(())
-        }
-
-        async fn read_stream(
-            &self,
-            stream_id: &EventStreamId,
-        ) -> Result<impl Stream<Item = DomainEvent>, StorageError> {
-            let expected_stream_id = self.expected_stream_id.clone().unwrap();
-            assert_eq!(stream_id, &expected_stream_id);
-            Ok(tokio_stream::iter(self.events.clone()))
-        }
-    }
-
-    struct EventProducingCommand;
-    impl EventProducingCommand {
-        fn new() -> Self {
-            EventProducingCommand
-        }
-    }
-
-    impl Command for EventProducingCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
-        type State = Stateless;
-
-        fn handle(&self, _state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            Ok(vec![
-                DomainEvent::FooHappened(123),
-                DomainEvent::BarHappened(123),
-            ])
-        }
-    }
-
-    struct RecoveringCommand;
-    impl RecoveringCommand {
-        fn new() -> Self {
-            RecoveringCommand
-        }
-    }
-    impl Command for RecoveringCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
-        type State = Stateless;
-
-        fn handle(&self, _state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            Ok(vec![DomainEvent::CommandRecovered])
-        }
-
-        fn handle_error(
-            &self,
-            error: &Self::Error,
-            _failure_context: Option<Self::FailureContext>,
-        ) -> Result<Option<Self::FailureContext>, Self::Error> {
-            match error {
-                ExecutionError::StorageError(_) => Ok(Some(FailureContext)),
-                _ => Err(error.clone()),
-            }
-        }
-    }
-
-    #[derive(Default)]
-    struct StatefulCommandState(u64);
-    impl AggregateState<DomainEvent> for StatefulCommandState {
-        fn apply_event(self, event: DomainEvent) -> Self {
-            match event {
-                DomainEvent::FooHappened(id) => StatefulCommandState(id),
-                DomainEvent::BarHappened(id) => StatefulCommandState(id),
-                DomainEvent::BazHappened { id: _id, value } => StatefulCommandState(value),
-                DomainEvent::CommandRecovered => StatefulCommandState(0),
-            }
-        }
-    }
-    struct StatefulCommand(u64);
-    impl StatefulCommand {
-        fn new(id: u64) -> Self {
-            StatefulCommand(id)
-        }
-    }
-    impl Command for StatefulCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
-        type State = StatefulCommandState;
-
-        fn handle(&self, state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            Ok(vec![DomainEvent::BazHappened {
-                id: self.0,
-                value: state.0 * 2,
-            }])
-        }
-
-        fn event_stream_id(&self) -> Option<EventStreamId> {
-            Some(EventStreamId::try_new(format!("thing.{}", self.0)).unwrap())
-        }
-    }
-
-    #[tokio::test]
-    async fn successful_command_execution_with_no_events_produced() {
-        let mut event_store = EventStoreImpl::new();
-        let command = NoopCommand::new(123);
-        match execute(command, &mut event_store, None).await {
-            Ok(()) => (),
-            other => panic!("Unexpected result: {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn command_rejection_error() {
-        let mut event_store = EventStoreImpl::new();
-        let command = NoopCommand::new(456);
-        match execute(command, &mut event_store, None).await {
-            Err(ExecutionError::Rejected) => (),
-            other => panic!("Unexpected result: {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn successful_execution_with_events_will_record_events() {
-        let mut event_store = EventStoreImpl::new();
-        assert_eq!(event_store.events, vec![]);
-        let command = EventProducingCommand::new();
-        match execute(command, &mut event_store, None).await {
-            Ok(()) => {
-                assert_eq!(
-                    event_store.events,
-                    vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123),]
-                )
-            }
-            other => panic!("Unexpected result: {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn event_storeage_error_surfaced_as_execution_error() {
-        let mut event_store = EventStoreImpl::new();
-        event_store.produce_error_for_next_publish();
-        let command = EventProducingCommand::new();
-        match execute(command, &mut event_store, None).await {
-            Err(ExecutionError::StorageError(_)) => (),
-            other => panic!("Unexpected result: {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn allow_command_to_handle_execution_errors() {
-        let mut event_store = EventStoreImpl::new();
-        event_store.produce_error_for_next_publish();
-        let command = RecoveringCommand::new();
-        match execute(command, &mut event_store, None).await {
-            Ok(()) => assert_eq!(event_store.events, vec![DomainEvent::CommandRecovered]),
-            other => panic!("Unexpected result: {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn existing_events_are_available_to_handler() {
-        let mut event_store = EventStoreImpl::new();
-        let stream_id = EventStreamId::try_new("thing.123".to_string()).unwrap();
-        event_store.expect_stream_id(stream_id);
-        event_store.events = vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123)];
-
-        let command = StatefulCommand::new(123);
-        match execute(command, &mut event_store, None).await {
-            Ok(()) => {
-                assert_eq!(
-                    event_store.events,
-                    vec![
-                        DomainEvent::FooHappened(123),
-                        DomainEvent::BarHappened(123),
-                        DomainEvent::BazHappened {
-                            id: 123,
-                            value: 246,
-                        }
-                    ]
-                )
-            }
-            other => panic!("Unexpected result: {:?}", other),
-        };
-    }
-}
+pub use command::{AggregateState, Command};
+pub use error::Error;
+pub use event::Event;
+pub use store::execute;
+pub use store::{
+    ConnectionSettings, EventStore, EventStoreOps, EventStream, EventStreamId, EventStreamVersion,
+    ExecuteConfig,
+};
