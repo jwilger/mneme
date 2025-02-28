@@ -13,8 +13,6 @@ pub use event::Event;
 pub use event_store::{EventStore, EventStreamId, EventStreamVersion};
 pub use kurrent_adapter::{ConnectionSettings, EventStream, Kurrent};
 
-use delay::RetryDelay;
-
 pub async fn execute<E, C, S>(
     command: C,
     event_store: &mut S,

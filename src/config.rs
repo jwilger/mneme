@@ -1,6 +1,5 @@
+use crate::delay::RetryDelay;
 use crate::error::Error;
-
-use crate::RetryDelay;
 
 const MAX_RETRIES_LIMIT: u32 = 10;
 const MIN_DELAY_MS: u64 = 50;
