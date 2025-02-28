@@ -10,8 +10,8 @@ pub use command::{AggregateState, Command};
 pub use config::ExecuteConfig;
 pub use error::Error;
 pub use event::Event;
-pub use event_store::{EventStore, EventStreamId};
-pub use kurrent_adapter::{ConnectionSettings, EventStream, EventStreamVersion, Kurrent};
+pub use event_store::{EventStore, EventStreamId, EventStreamVersion};
+pub use kurrent_adapter::{ConnectionSettings, EventStream, Kurrent};
 
 use delay::RetryDelay;
 

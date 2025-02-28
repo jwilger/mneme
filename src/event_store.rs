@@ -48,3 +48,16 @@ impl std::fmt::Display for EventStreamId {
         write!(f, "{}", self.0)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventStreamVersion(u64);
+
+impl EventStreamVersion {
+    pub fn new(version: u64) -> Self {
+        Self(version)
+    }
+
+    pub fn value(&self) -> u64 {
+        self.0
+    }
+}

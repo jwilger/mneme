@@ -1,6 +1,7 @@
 use mneme::EventStore;
+use mneme::EventStreamVersion;
 use mneme::ExecuteConfig;
-use mneme::{AggregateState, Command, Error, Event, EventStreamVersion, execute};
+use mneme::{AggregateState, Command, Error, Event, execute};
 use mneme::{ConnectionSettings, EventStream, EventStreamId, Kurrent};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;

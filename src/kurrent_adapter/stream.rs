@@ -1,25 +1,12 @@
 use crate::error::Error;
 use crate::event::Event;
-use crate::event_store::EventStreamId;
+use crate::event_store::{EventStreamId, EventStreamVersion};
 use bytes::Bytes;
 use std::marker::PhantomData;
 
 impl eventstore::StreamName for EventStreamId {
     fn into_stream_name(self) -> Bytes {
         Bytes::from(self.0.to_string())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EventStreamVersion(u64);
-
-impl EventStreamVersion {
-    pub fn new(version: u64) -> Self {
-        Self(version)
-    }
-
-    pub fn value(&self) -> u64 {
-        self.0
     }
 }
 

@@ -2,12 +2,11 @@ mod settings;
 mod stream;
 
 pub use settings::ConnectionSettings;
-pub use stream::{EventStream, EventStreamVersion};
+pub use stream::EventStream;
 
 use crate::error::Error;
 use crate::event::Event;
-use crate::event_store::{EventStore, EventStreamId};
-
+use crate::event_store::{EventStore, EventStreamId, EventStreamVersion};
 use eventstore::AppendToStreamOptions;
 
 #[derive(Clone)]
