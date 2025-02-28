@@ -1,5 +1,5 @@
 use crate::error::Error;
-use eventstore::ClientSettings as EsClientSettings;
+use eventstore::ClientSettings;
 use std::fmt;
 
 #[derive(Clone)]
@@ -64,7 +64,7 @@ impl ConnectionSettings {
         )
     }
 
-    pub(crate) fn to_client_settings(&self) -> Result<EsClientSettings, Error> {
+    pub(crate) fn to_client_settings(&self) -> Result<ClientSettings, Error> {
         let conn_string = self.to_connection_string();
         conn_string.parse().map_err(Error::EventStoreSettings)
     }
