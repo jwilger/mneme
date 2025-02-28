@@ -32,10 +32,8 @@ impl Kurrent {
     pub fn stream_writer(&self, stream_id: EventStreamId) -> EventStreamWriter {
         EventStreamWriter::new(self.clone(), stream_id)
     }
-}
 
-impl EventStore for Kurrent {
-    async fn append_to_stream(
+    pub async fn append_to_stream(
         &mut self,
         stream_id: EventStreamId,
         options: &AppendToStreamOptions,
@@ -57,7 +55,9 @@ impl EventStore for Kurrent {
                 e => Error::EventStoreOther(e),
             })
     }
+}
 
+impl EventStore for Kurrent {
     async fn publish<E: Event>(
         &mut self,
         stream_id: EventStreamId,

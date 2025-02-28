@@ -4,13 +4,6 @@ use uuid::Uuid;
 use crate::{Error, Event, EventStream};
 
 pub trait EventStore {
-    fn append_to_stream(
-        &mut self,
-        stream_id: EventStreamId,
-        options: &AppendToStreamOptions,
-        events: Vec<eventstore::EventData>,
-    ) -> impl std::future::Future<Output = Result<eventstore::WriteResult, Error>> + Send;
-
     fn publish<E: Event>(
         &mut self,
         stream_id: EventStreamId,

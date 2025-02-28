@@ -67,9 +67,7 @@ impl TestEventStore {
     {
         self.on_first_append = Some(Box::new(move || Box::pin(f())));
     }
-}
 
-impl EventStore for TestEventStore {
     async fn append_to_stream(
         &mut self,
         stream_id: EventStreamId,
@@ -88,7 +86,9 @@ impl EventStore for TestEventStore {
             .append_to_stream(stream_id, options, events)
             .await
     }
+}
 
+impl EventStore for TestEventStore {
     async fn publish<E: Event>(
         &mut self,
         stream_id: EventStreamId,
