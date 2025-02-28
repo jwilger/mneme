@@ -13,10 +13,6 @@ pub struct ExecuteConfig {
 }
 
 impl ExecuteConfig {
-    /// Sets the maximum number of retries for command execution.
-    /// Returns an error if:
-    /// - max_retries is 0 (no retries possible)
-    /// - max_retries > 10 (prevents excessive retries)
     pub fn with_max_retries(mut self, max_retries: u32) -> Result<Self, Error> {
         if max_retries == 0 {
             return Err(Error::InvalidConfig {
@@ -34,12 +30,6 @@ impl ExecuteConfig {
         Ok(self)
     }
 
-    /// Sets the base delay in milliseconds between retry attempts.
-    /// This value is used as the base for exponential backoff with jitter.
-    /// Returns an error if:
-    /// - delay_ms is 0 (no delay)
-    /// - delay_ms < 50ms (too aggressive)
-    /// - delay_ms > 5000ms (too long for base delay)
     pub fn with_base_delay(mut self, delay_ms: u64) -> Result<Self, Error> {
         if delay_ms == 0 {
             return Err(Error::InvalidConfig {
@@ -64,8 +54,6 @@ impl ExecuteConfig {
         Ok(self)
     }
 
-    /// Sets the maximum delay in milliseconds between retry attempts.
-    /// This caps the exponential backoff to prevent excessive delays.
     pub fn with_max_delay(mut self, max_delay_ms: u64) -> Result<Self, Error> {
         if max_delay_ms < self.retry_delay.base_delay_ms() {
             return Err(Error::InvalidConfig {
@@ -104,7 +92,6 @@ mod tests {
 
     #[test]
     fn validates_max_retries() {
-        // Test zero retries
         match ExecuteConfig::default().with_max_retries(0) {
             Err(Error::InvalidConfig {
                 message, parameter, ..
@@ -115,7 +102,6 @@ mod tests {
             other => panic!("Expected InvalidConfig error, got {:?}", other),
         }
 
-        // Test exceeding limit
         match ExecuteConfig::default().with_max_retries(MAX_RETRIES_LIMIT + 1) {
             Err(Error::InvalidConfig {
                 message, parameter, ..
@@ -129,7 +115,6 @@ mod tests {
             other => panic!("Expected InvalidConfig error, got {:?}", other),
         }
 
-        // Test valid values
         let config = ExecuteConfig::default()
             .with_max_retries(5)
             .expect("Failed to set valid max_retries");
@@ -138,7 +123,6 @@ mod tests {
 
     #[test]
     fn validates_base_delay() {
-        // Test zero delay
         match ExecuteConfig::default().with_base_delay(0) {
             Err(Error::InvalidConfig {
                 message, parameter, ..
@@ -149,7 +133,6 @@ mod tests {
             other => panic!("Expected InvalidConfig error, got {:?}", other),
         }
 
-        // Test too small delay
         match ExecuteConfig::default().with_base_delay(MIN_DELAY_MS - 1) {
             Err(Error::InvalidConfig {
                 message, parameter, ..
@@ -163,7 +146,6 @@ mod tests {
             other => panic!("Expected InvalidConfig error, got {:?}", other),
         }
 
-        // Test too large delay
         match ExecuteConfig::default().with_base_delay(MAX_DELAY_MS + 1) {
             Err(Error::InvalidConfig {
                 message, parameter, ..
@@ -177,7 +159,6 @@ mod tests {
             other => panic!("Expected InvalidConfig error, got {:?}", other),
         }
 
-        // Test valid values
         let config = ExecuteConfig::default()
             .with_base_delay(200)
             .expect("Failed to set valid base_delay");
@@ -188,7 +169,6 @@ mod tests {
     fn validates_max_delay() {
         let config = ExecuteConfig::default().with_base_delay(100).unwrap();
 
-        // Test max delay less than base delay
         match config.clone().with_max_delay(50) {
             Err(Error::InvalidConfig {
                 message, parameter, ..
@@ -202,7 +182,6 @@ mod tests {
             other => panic!("Expected InvalidConfig error, got {:?}", other),
         }
 
-        // Test valid max delay
         let config = config
             .with_max_delay(1000)
             .expect("Failed to set valid max_delay");

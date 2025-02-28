@@ -2,10 +2,6 @@ use crate::error::Error;
 use eventstore::ClientSettings as EsClientSettings;
 use std::fmt;
 
-/// Settings for connecting to EventStore.
-///
-/// This struct provides a secure way to configure EventStore connections
-/// with sensitive data like credentials and connection strings handled safely.
 #[derive(Clone)]
 pub struct ConnectionSettings {
     host: String,
@@ -15,7 +11,6 @@ pub struct ConnectionSettings {
     password: SecureString,
 }
 
-/// Format string to hide sensitive data in errors and debug output
 impl fmt::Debug for ConnectionSettings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConnectionSettings")
@@ -34,14 +29,6 @@ impl ConnectionSettings {
         ConnectionSettingsBuilder::default()
     }
 
-    /// Creates ConnectionSettings from environment variables.
-    ///
-    /// Expected environment variables:
-    /// - KURRENT_HOST (default: "localhost")
-    /// - KURRENT_PORT (default: 2113)
-    /// - KURRENT_TLS (default: false)
-    /// - KURRENT_USERNAME (default: "admin")
-    /// - KURRENT_PASSWORD (required)
     pub fn from_env() -> Result<Self, Error> {
         let host = env_safe::var_opt("KURRENT_HOST").unwrap_or_else(|| "localhost".to_string());
         let port = env_safe::var_opt("KURRENT_PORT")
@@ -66,7 +53,6 @@ impl ConnectionSettings {
         })
     }
 
-    /// Converts the settings into an EventStore connection string.
     pub(crate) fn to_connection_string(&self) -> String {
         format!(
             "esdb://{}:{}@{}:{}?tls={}",
@@ -78,17 +64,12 @@ impl ConnectionSettings {
         )
     }
 
-    /// Converts the settings into EventStore client settings.
     pub(crate) fn to_client_settings(&self) -> Result<EsClientSettings, Error> {
         let conn_string = self.to_connection_string();
         conn_string.parse().map_err(Error::EventStoreSettings)
     }
 }
 
-/// Builder for ConnectionSettings.
-///
-/// Provides a fluent interface for configuring EventStore connections
-/// with validation and secure handling of credentials.
 #[derive(Default)]
 pub struct ConnectionSettingsBuilder {
     host: Option<String>,
@@ -99,42 +80,31 @@ pub struct ConnectionSettingsBuilder {
 }
 
 impl ConnectionSettingsBuilder {
-    /// Sets the EventStore host.
     pub fn host(mut self, host: impl Into<String>) -> Self {
         self.host = Some(host.into());
         self
     }
 
-    /// Sets the EventStore port.
     pub fn port(mut self, port: u16) -> Self {
         self.port = Some(port);
         self
     }
 
-    /// Enables or disables TLS.
     pub fn tls(mut self, enable: bool) -> Self {
         self.tls = Some(enable);
         self
     }
 
-    /// Sets the username for authentication.
     pub fn username(mut self, username: impl Into<String>) -> Self {
         self.username = Some(username.into());
         self
     }
 
-    /// Sets the password for authentication.
-    /// The password is stored securely in memory.
     pub fn password(mut self, password: impl Into<String>) -> Self {
         self.password = Some(SecureString::new(password.into()));
         self
     }
 
-    /// Builds the ConnectionSettings.
-    ///
-    /// # Returns
-    ///
-    /// Returns an error if required fields are missing.
     pub fn build(self) -> Result<ConnectionSettings, Error> {
         Ok(ConnectionSettings {
             host: self.host.unwrap_or_else(|| "localhost".to_string()),
@@ -149,11 +119,6 @@ impl ConnectionSettingsBuilder {
     }
 }
 
-/// A string that attempts to securely store sensitive data.
-///
-/// - The contents are zeroed when dropped
-/// - The contents are not displayed in Debug output
-/// - The contents are not cloned (to avoid spreading sensitive data)
 struct SecureString {
     inner: String,
     should_zero: bool,
@@ -202,12 +167,10 @@ mod env_safe {
     //! These are deliberately limited to just what we need for settings.
     use std::env;
 
-    /// Safely gets an environment variable.
     pub fn var(key: &str) -> Result<String, env::VarError> {
         env::var(key)
     }
 
-    /// Safely gets an optional environment variable.
     pub fn var_opt(key: &str) -> Option<String> {
         var(key).ok()
     }
@@ -239,7 +202,6 @@ mod env_safe {
 mod tests {
     use super::*;
 
-    /// A helper for managing environment variables in tests
     struct TestEnv {
         vars: Vec<(String, String)>,
     }
@@ -255,22 +217,18 @@ mod tests {
         }
 
         fn run<T, F: FnOnce() -> T>(&self, f: F) -> T {
-            // Save current values
             let mut old_values = Vec::new();
             for (key, _) in &self.vars {
                 old_values.push((key.clone(), env_safe::var_opt(key)));
             }
 
-            // Set new values
             for (key, value) in &self.vars {
                 // SAFETY: This is only used in tests and the values are restored
                 unsafe { env_safe::set_var_for_test(key, value) };
             }
 
-            // Run the function
             let result = f();
 
-            // Restore old values
             for (key, value) in old_values {
                 match value {
                     Some(v) => unsafe { env_safe::set_var_for_test(&key, &v) },
@@ -357,7 +315,6 @@ mod tests {
 
     #[test]
     fn loads_from_env() {
-        // Test with all variables set
         let test_env = TestEnv::new()
             .with("KURRENT_HOST", "test.com")
             .with("KURRENT_PORT", "5555")
@@ -372,7 +329,6 @@ mod tests {
         assert_eq!(settings.username, "tester");
         assert_eq!(settings.password.as_str(), "secret");
 
-        // Test defaults
         let test_env = TestEnv::new().with("KURRENT_PASSWORD", "secret");
 
         let settings = test_env.run(|| ConnectionSettings::from_env().unwrap());
@@ -382,7 +338,6 @@ mod tests {
         assert_eq!(settings.username, "admin");
         assert_eq!(settings.password.as_str(), "secret");
 
-        // Test missing password
         let test_env = TestEnv::new();
         let result = test_env.run(ConnectionSettings::from_env);
         assert!(matches!(

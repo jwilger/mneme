@@ -6,17 +6,13 @@ thread_local! {
     static THREAD_RNG: RefCell<SmallRng> = RefCell::new(SmallRng::seed_from_u64(0));
 }
 
-/// Configuration for retry delays with jitter
 #[derive(Debug, Clone, Copy)]
 pub struct RetryDelay {
-    /// Base delay (in milliseconds) before applying exponential backoff and jitter
     base_delay_ms: u64,
-    /// Maximum delay (in milliseconds) after applying exponential backoff and jitter
     max_delay_ms: u64,
 }
 
 impl RetryDelay {
-    /// Creates a new RetryDelay configuration
     pub fn new(base_delay_ms: u64, max_delay_ms: u64) -> Self {
         Self {
             base_delay_ms,
@@ -24,25 +20,14 @@ impl RetryDelay {
         }
     }
 
-    /// Returns the configured base delay in milliseconds
     pub fn base_delay_ms(&self) -> u64 {
         self.base_delay_ms
     }
 
-    /// Returns the configured maximum delay in milliseconds
     pub fn max_delay_ms(&self) -> u64 {
         self.max_delay_ms
     }
 
-    /// Calculates the delay for a given retry attempt using exponential backoff with full jitter.
-    ///
-    /// The algorithm:
-    /// 1. Calculates exponential delay: base_delay * 2^retry_count
-    /// 2. Caps at max_delay
-    /// 3. Applies full jitter by randomly selecting a value between 0 and the calculated delay
-    ///
-    /// This helps prevent the "thundering herd" problem in distributed systems by
-    /// ensuring retrying clients don't all hit the server at the same time.
     pub fn calculate_delay(&self, retry_count: u32) -> Duration {
         // Calculate exponential delay
         let exp_delay = self.base_delay_ms * 2u64.pow(retry_count);
@@ -112,20 +97,17 @@ mod tests {
         let retry_delay = RetryDelay::new(100, 1000);
         let mut delays = Vec::new();
 
-        // Collect multiple delays to check for variation
         for _ in 0..100 {
             let delay = retry_delay.calculate_delay(1);
             delays.push(delay.as_millis());
         }
 
-        // Check that we get some variation in the delays
         let unique_delays = delays.iter().collect::<HashSet<_>>();
         assert!(
             unique_delays.len() > 1,
             "Jitter should produce varying delays"
         );
 
-        // Check that all delays are within expected bounds
         assert!(
             delays.iter().all(|&d| d <= 200),
             "All delays should be <= 2 * base delay"
@@ -136,7 +118,6 @@ mod tests {
     fn respects_max_delay() {
         let retry_delay = RetryDelay::new(100, 500);
 
-        // Even with a high retry count, delay should be capped
         for _ in 0..100 {
             let delay = retry_delay.calculate_delay(10); // Would be 102400ms without cap
             assert!(
@@ -146,4 +127,3 @@ mod tests {
         }
     }
 }
-

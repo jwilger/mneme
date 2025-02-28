@@ -1,93 +1,3 @@
-//! Event store implementation for persisting and retrieving events.
-//!
-//! This module provides the core event store functionality for the event sourcing system.
-//! It handles:
-//! - Event persistence
-//! - Stream management
-//! - Event retrieval
-//! - Optimistic concurrency control
-//!
-//! # Examples
-//!
-//! Basic event store operations:
-//!
-//! ```rust,no_run
-//! use mneme::{EventStore, ConnectionSettings, Event, EventStreamId};
-//! use serde::{Serialize, Deserialize};
-//!
-//! #[derive(Debug, Serialize, Deserialize)]
-//! enum OrderEvent {
-//!     Created { id: String }
-//! }
-//!
-//! impl Event for OrderEvent {
-//!     fn event_type(&self) -> String {
-//!         match self {
-//!             OrderEvent::Created { .. } => "OrderCreated".to_string()
-//!         }
-//!     }
-//! }
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! // Initialize from environment
-//! let settings = ConnectionSettings::from_env()?;
-//! let store = EventStore::new(&settings)?;
-//!
-//! // Read from a stream
-//! let stream_id = EventStreamId::new();
-//! let mut stream = store
-//!     .stream_builder(stream_id.clone())
-//!     .max_count(100)
-//!     .read::<OrderEvent>()
-//!     .await?;
-//!
-//! while let Some((event, version)) = stream.next().await? {
-//!     println!("Event at version {}: {:?}", version.value(), event);
-//! }
-//!
-//! // Write to a stream
-//! let events = vec![OrderEvent::Created {
-//!     id: "order-123".to_string()
-//! }];
-//!
-//! store.stream_writer(stream_id)
-//!     .append(events)
-//!     .await?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Using optimistic concurrency:
-//!
-//! ```rust,no_run
-//! # use mneme::{EventStore, ConnectionSettings, Event, EventStreamId};
-//! # use serde::{Serialize, Deserialize};
-//! # #[derive(Debug, Serialize, Deserialize)]
-//! # enum OrderEvent {
-//! #     Created { id: String }
-//! # }
-//! # impl Event for OrderEvent {
-//! #     fn event_type(&self) -> String {
-//! #         "OrderCreated".to_string()
-//! #     }
-//! # }
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! # let settings = ConnectionSettings::from_env()?;
-//! # let store = EventStore::new(&settings)?;
-//! let stream_id = EventStreamId::new();
-//! let events = vec![OrderEvent::Created {
-//!     id: "order-123".to_string()
-//! }];
-//!
-//! // Write only if stream is at version 5
-//! store.stream_writer(stream_id)
-//!     .expected_version(5)
-//!     .append(events)
-//!     .await?;
-//! # Ok(())
-//! # }
-//! ```
-
 mod settings;
 mod stream;
 
@@ -106,20 +16,11 @@ pub struct Kurrent {
 }
 
 impl Kurrent {
-    /// Creates a new EventStore instance using the provided connection settings.
     pub fn new(settings: &ConnectionSettings) -> Result<Self, Error> {
         let client = eventstore::Client::new(settings.to_client_settings()?)?;
         Ok(Self { client })
     }
 
-    /// Creates a new EventStore instance from environment variables.
-    ///
-    /// This method will read connection settings from environment variables:
-    /// - EVENTSTORE_HOST (default: "localhost")
-    /// - EVENTSTORE_PORT (default: 2113)
-    /// - EVENTSTORE_TLS (default: false)
-    /// - EVENTSTORE_USERNAME (default: "admin")
-    /// - EVENTSTORE_PASSWORD (required)
     pub fn from_env() -> Result<Self, Error> {
         let settings = ConnectionSettings::from_env()?;
         Self::new(&settings)
