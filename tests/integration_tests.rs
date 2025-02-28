@@ -163,7 +163,6 @@ impl Command<()> for NoopCommand {
     type State = ();
     type Error = Infallible;
 
-    fn empty_state(&self) -> Self::State {}
     fn handle(&self) -> Result<Vec<()>, Self::Error> {
         Ok(vec![])
     }
@@ -195,7 +194,6 @@ impl Command<()> for RejectCommand {
     type State = ();
     type Error = RejectCommandError;
 
-    fn empty_state(&self) -> Self::State {}
     fn handle(&self) -> Result<Vec<()>, Self::Error> {
         Err(RejectCommandError("no".to_string()))
     }
@@ -217,7 +215,6 @@ impl Command<TestEvent> for EventProducingCommand {
     type State = ();
     type Error = Infallible;
 
-    fn empty_state(&self) -> Self::State {}
     fn handle(&self) -> Result<Vec<TestEvent>, Self::Error> {
         Ok(vec![
             TestEvent::One { id: self.id },
@@ -277,13 +274,6 @@ impl Command<TestEvent> for StatefulCommand {
     type State = StatefulCommandState;
     type Error = Infallible;
 
-    fn empty_state(&self) -> Self::State {
-        StatefulCommandState {
-            foo: None,
-            bar: None,
-        }
-    }
-
     fn get_state(&self) -> Self::State {
         self.state.clone()
     }
@@ -314,13 +304,6 @@ struct ConcurrentModificationCommand {
 impl Command<TestEvent> for ConcurrentModificationCommand {
     type State = StatefulCommandState;
     type Error = Error;
-
-    fn empty_state(&self) -> Self::State {
-        StatefulCommandState {
-            foo: None,
-            bar: None,
-        }
-    }
 
     fn get_state(&self) -> Self::State {
         self.state.clone()
@@ -402,7 +385,6 @@ impl Command<TestEvent> for AlwaysConflictingCommand {
     type State = ();
     type Error = Error;
 
-    fn empty_state(&self) -> Self::State {}
     fn get_state(&self) -> Self::State {}
     fn set_state(&self, _: Self::State) -> Self {
         (*self).clone()
@@ -724,4 +706,3 @@ fn execute_config_validates_inputs() {
     assert_eq!(config.max_retries(), 5);
     assert_eq!(config.retry_delay().base_delay_ms(), 200);
 }
-

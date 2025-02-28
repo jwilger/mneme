@@ -76,10 +76,6 @@
 //!     type State = BankAccount;
 //!     type Error = CommandError;
 //!
-//!     fn empty_state(&self) -> Self::State {
-//!         BankAccount::default()
-//!     }
-//!
 //!     fn handle(&self) -> Result<Vec<BankAccountEvent>, Self::Error> {
 //!         Ok(vec![BankAccountEvent::Created {
 //!             id: self.id.clone(),
@@ -173,10 +169,6 @@ use std::fmt::Debug;
 ///     type State = BankAccount;
 ///     type Error = CommandError;
 ///
-///     fn empty_state(&self) -> Self::State {
-///         BankAccount::default()
-///     }
-///
 ///     fn handle(&self) -> Result<Vec<BankAccountEvent>, Self::Error> {
 ///         Ok(vec![BankAccountEvent::Deposited {
 ///             amount: self.amount,
@@ -202,48 +194,51 @@ use std::fmt::Debug;
 pub trait Command<E: Event> {
     /// The aggregate state type for this command
     type State: AggregateState<E>;
-    
+
     /// The error type that can be returned when handling this command
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Creates an empty state for the aggregate
-    fn empty_state(&self) -> Self::State;
-    
     /// Handles the command and produces events
     ///
     /// This is the main entry point for command execution. It should validate
     /// the command against the current state and return the events that should
     /// be applied.
     fn handle(&self) -> Result<Vec<E>, Self::Error>;
-    
+
     /// Returns the stream ID for this command's events
     fn event_stream_id(&self) -> EventStreamId;
-    
+
     /// Gets the current aggregate state
     fn get_state(&self) -> Self::State;
-    
+
     /// Sets a new aggregate state
     fn set_state(&self, state: Self::State) -> Self;
-    
+
     /// Called when a command is being retried
     ///
     /// The default implementation simply clones the command. Override this
     /// if special handling is needed for retries.
-    fn mark_retry(&self) -> Self where Self: Sized + Clone {
+    fn mark_retry(&self) -> Self
+    where
+        Self: Sized + Clone,
+    {
         self.clone()
     }
-    
+
     /// Overrides the expected version for optimistic concurrency control
     ///
     /// Return None to use the default version checking behavior.
     fn override_expected_version(&self) -> Option<u64> {
         None
     }
-    
+
     /// Applies an event to the command's state
     ///
     /// The default implementation updates the state using the AggregateState trait.
-    fn apply(&mut self, event: E) -> Self where Self: Sized {
+    fn apply(&mut self, event: E) -> Self
+    where
+        Self: Sized,
+    {
         self.set_state(self.get_state().apply(event))
     }
 }
@@ -253,9 +248,12 @@ impl<E: Event> Command<E> for () {
     type State = ();
     type Error = std::convert::Infallible;
 
-    fn empty_state(&self) -> Self::State {}
-    fn handle(&self) -> Result<Vec<E>, Self::Error> { Ok(vec![]) }
-    fn event_stream_id(&self) -> EventStreamId { EventStreamId::new() }
+    fn handle(&self) -> Result<Vec<E>, Self::Error> {
+        Ok(vec![])
+    }
+    fn event_stream_id(&self) -> EventStreamId {
+        EventStreamId::new()
+    }
     fn get_state(&self) -> Self::State {}
     fn set_state(&self, _: Self::State) -> Self {}
     fn mark_retry(&self) -> Self {}

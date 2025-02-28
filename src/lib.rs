@@ -94,10 +94,6 @@
 //!     type State = User;
 //!     type Error = CommandError;
 //!
-//!     fn empty_state(&self) -> Self::State {
-//!         User { id: None }
-//!     }
-//!
 //!     fn handle(&self) -> Result<Vec<UserEvent>, Self::Error> {
 //!         Ok(vec![UserEvent::Created {
 //!             id: self.id.clone()
@@ -290,10 +286,6 @@
 //! impl Command<BankAccountEvent> for CreateAccount {
 //!     type State = BankAccount;
 //!     type Error = CommandError;
-//!
-//!     fn empty_state(&self) -> Self::State {
-//!         BankAccount::default()
-//!     }
 //!
 //!     fn handle(&self) -> Result<Vec<BankAccountEvent>, Self::Error> {
 //!         Ok(vec![BankAccountEvent::Created {
