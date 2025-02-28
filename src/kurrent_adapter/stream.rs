@@ -1,33 +1,8 @@
 use crate::error::Error;
 use crate::event::Event;
+use crate::event_store::EventStreamId;
 use bytes::Bytes;
 use std::marker::PhantomData;
-use uuid::Uuid;
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct EventStreamId(pub Uuid);
-
-impl EventStreamId {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-}
-
-impl Default for EventStreamId {
-    fn default() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl std::fmt::Display for EventStreamId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
 
 impl eventstore::StreamName for EventStreamId {
     fn into_stream_name(self) -> Bytes {
@@ -68,4 +43,3 @@ impl<E: Event> EventStream<E> {
         }
     }
 }
-

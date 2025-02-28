@@ -1,5 +1,5 @@
 use crate::event::Event;
-use crate::kurrent_adapter::EventStreamId;
+use crate::event_store::EventStreamId;
 use std::fmt::Debug;
 
 pub trait Command<E: Event> {

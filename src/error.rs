@@ -2,7 +2,8 @@ use eventstore::ClientSettingsParseError;
 use std::fmt::Debug;
 use thiserror::Error;
 
-use crate::{EventStreamId, EventStreamVersion};
+use crate::EventStreamVersion;
+use crate::event_store::EventStreamId;
 
 #[derive(Debug, Error)]
 pub enum Error {

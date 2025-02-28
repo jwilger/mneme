@@ -1,6 +1,7 @@
 use eventstore::AppendToStreamOptions;
+use uuid::Uuid;
 
-use crate::{Error, Event, EventStream, EventStreamId};
+use crate::{Error, Event, EventStream};
 
 pub trait EventStore {
     fn append_to_stream(
@@ -21,4 +22,29 @@ pub trait EventStore {
         &self,
         stream_id: EventStreamId,
     ) -> impl std::future::Future<Output = Result<EventStream<E>, Error>> + Send;
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct EventStreamId(pub Uuid);
+
+impl EventStreamId {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+}
+
+impl Default for EventStreamId {
+    fn default() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for EventStreamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
