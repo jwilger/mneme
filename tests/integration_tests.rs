@@ -1,13 +1,12 @@
+use mneme::EventStore;
 use mneme::ExecuteConfig;
+use mneme::{AggregateState, Command, Error, Event, EventStreamVersion, execute};
+use mneme::{ConnectionSettings, EventStream, EventStreamId, Kurrent};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use uuid::Uuid;
-
-use mneme::EventStore;
-use mneme::{AggregateState, Command, Error, Event, EventStreamVersion, execute};
-use mneme::{ConnectionSettings, EventStream, EventStreamId, Kurrent};
 
 mod test_helpers {
     use super::*;
