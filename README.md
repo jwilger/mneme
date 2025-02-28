@@ -10,11 +10,6 @@ of your domain events. It is built on top of [Kurrent](https://kurrent.dev/)
 (formerly EventStoreDB) and provides a clean, type-safe API for implementing
 event-sourced systems.
 
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md)
-for details.
-
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE)
