@@ -336,15 +336,120 @@
 //! ```
 
 mod command;
-pub mod error;
+mod config;
+mod delay;
+mod error;
 mod event;
-mod store;
+mod event_store;
+mod kurrent_adapter;
 
 pub use command::{AggregateState, Command};
+pub use config::ExecuteConfig;
 pub use error::Error;
 pub use event::Event;
-pub use store::execute;
-pub use store::{
-    ConnectionSettings, EventStore, EventStoreOps, EventStream, EventStreamId, EventStreamVersion,
-    ExecuteConfig,
+pub use event_store::EventStore;
+pub use kurrent_adapter::{
+    ConnectionSettings, EventStream, EventStreamId, EventStreamVersion, Kurrent,
 };
+
+use delay::RetryDelay;
+
+pub async fn execute<E, C, S>(
+    command: C,
+    event_store: &mut S,
+    config: ExecuteConfig,
+) -> Result<(), Error>
+where
+    E: Event,
+    C: Command<E> + Clone + Send,
+    S: EventStore + Send,
+{
+    // Create metrics for this execution
+    let mut retries = 0;
+    let mut command = command;
+
+    let result = loop {
+        if retries > config.max_retries() {
+            break Err(Error::MaxRetriesExceeded {
+                stream: command.event_stream_id().to_string(),
+                max_retries: config.max_retries(),
+            });
+        }
+
+        let mut expected_version = None;
+
+        // Read and apply existing events from the stream to rebuild the aggregate state
+        let read_result = event_store.read_stream(command.event_stream_id()).await;
+
+        match read_result {
+            // Stream doesn't exist yet, which is fine for a new aggregate
+            Err(Error::EventStoreOther(eventstore::Error::ResourceNotFound)) => {}
+
+            // Other errors should be propagated
+            Err(other) => {
+                break Err(other);
+            }
+
+            // Stream exists, so apply all events to rebuild the aggregate state
+            Ok(mut event_stream) => {
+                while let Some((event, version)) = event_stream.next().await? {
+                    command = command.apply(event);
+                    expected_version = Some(version);
+                }
+            }
+        }
+
+        // Now handle the command and produce new events
+        let domain_events = match command.handle() {
+            Ok(events) => events,
+            Err(e) => {
+                break Err(Error::CommandFailed {
+                    message: e.to_string(),
+                    attempt: retries + 1,
+                    max_attempts: config.max_retries(),
+                    source: Box::new(e),
+                });
+            }
+        };
+
+        // Only publish if there are events to publish
+        if !domain_events.is_empty() {
+            // Let the command override the expected version if it wants to
+            let append_options = match (command.override_expected_version(), expected_version) {
+                (Some(v), _) => eventstore::AppendToStreamOptions::default()
+                    .expected_revision(eventstore::ExpectedRevision::Exact(v)),
+                (None, Some(v)) => eventstore::AppendToStreamOptions::default()
+                    .expected_revision(eventstore::ExpectedRevision::Exact(v.value())),
+                (None, None) => Default::default(),
+            };
+
+            match event_store
+                .publish(command.event_stream_id(), domain_events, &append_options)
+                .await
+            {
+                Ok(_) => {
+                    break Ok(());
+                }
+                Err(Error::EventStoreVersionMismatch { .. }) => {
+                    // Calculate delay with exponential backoff and jitter
+                    let delay = config.retry_delay().calculate_delay(retries);
+                    tokio::time::sleep(delay).await;
+
+                    // Mark command as being retried and increment retry counter
+                    command = command.mark_retry();
+                    retries += 1;
+                    continue;
+                }
+                Err(e) => {
+                    break Err(e);
+                }
+            }
+        }
+
+        break Ok(());
+    };
+
+    // Stop the timer before returning
+
+    result
+}

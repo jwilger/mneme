@@ -101,7 +101,7 @@
 //! ```
 
 use crate::event::Event;
-use crate::store::EventStreamId;
+use crate::kurrent_adapter::EventStreamId;
 use std::fmt::Debug;
 
 /// Represents a command that can be executed to produce events.

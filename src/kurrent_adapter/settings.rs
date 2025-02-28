@@ -37,24 +37,23 @@ impl ConnectionSettings {
     /// Creates ConnectionSettings from environment variables.
     ///
     /// Expected environment variables:
-    /// - EVENTSTORE_HOST (default: "localhost")
-    /// - EVENTSTORE_PORT (default: 2113)
-    /// - EVENTSTORE_TLS (default: false)
-    /// - EVENTSTORE_USERNAME (default: "admin")
-    /// - EVENTSTORE_PASSWORD (required)
+    /// - KURRENT_HOST (default: "localhost")
+    /// - KURRENT_PORT (default: 2113)
+    /// - KURRENT_TLS (default: false)
+    /// - KURRENT_USERNAME (default: "admin")
+    /// - KURRENT_PASSWORD (required)
     pub fn from_env() -> Result<Self, Error> {
-        let host = env_safe::var_opt("EVENTSTORE_HOST").unwrap_or_else(|| "localhost".to_string());
-        let port = env_safe::var_opt("EVENTSTORE_PORT")
+        let host = env_safe::var_opt("KURRENT_HOST").unwrap_or_else(|| "localhost".to_string());
+        let port = env_safe::var_opt("KURRENT_PORT")
             .and_then(|p| p.parse().ok())
             .unwrap_or(2113);
-        let tls = env_safe::var_opt("EVENTSTORE_TLS")
+        let tls = env_safe::var_opt("KURRENT_TLS")
             .and_then(|t| t.parse().ok())
             .unwrap_or(false);
-        let username =
-            env_safe::var_opt("EVENTSTORE_USERNAME").unwrap_or_else(|| "admin".to_string());
+        let username = env_safe::var_opt("KURRENT_USERNAME").unwrap_or_else(|| "admin".to_string());
 
-        let password = env_safe::var("EVENTSTORE_PASSWORD").map_err(|_| Error::InvalidConfig {
-            message: "EVENTSTORE_PASSWORD environment variable is required".to_string(),
+        let password = env_safe::var("KURRENT_PASSWORD").map_err(|_| Error::InvalidConfig {
+            message: "KURRENT_PASSWORD environment variable is required".to_string(),
             parameter: Some("password".to_string()),
         })?;
 
@@ -360,11 +359,11 @@ mod tests {
     fn loads_from_env() {
         // Test with all variables set
         let test_env = TestEnv::new()
-            .with("EVENTSTORE_HOST", "test.com")
-            .with("EVENTSTORE_PORT", "5555")
-            .with("EVENTSTORE_TLS", "true")
-            .with("EVENTSTORE_USERNAME", "tester")
-            .with("EVENTSTORE_PASSWORD", "secret");
+            .with("KURRENT_HOST", "test.com")
+            .with("KURRENT_PORT", "5555")
+            .with("KURRENT_TLS", "true")
+            .with("KURRENT_USERNAME", "tester")
+            .with("KURRENT_PASSWORD", "secret");
 
         let settings = test_env.run(|| ConnectionSettings::from_env().unwrap());
         assert_eq!(settings.host, "test.com");
@@ -374,7 +373,7 @@ mod tests {
         assert_eq!(settings.password.as_str(), "secret");
 
         // Test defaults
-        let test_env = TestEnv::new().with("EVENTSTORE_PASSWORD", "secret");
+        let test_env = TestEnv::new().with("KURRENT_PASSWORD", "secret");
 
         let settings = test_env.run(|| ConnectionSettings::from_env().unwrap());
         assert_eq!(settings.host, "localhost");
@@ -392,8 +391,7 @@ mod tests {
                 message,
                 parameter: Some(param),
                 ..
-            }) if message == "EVENTSTORE_PASSWORD environment variable is required" && param == "password"
+            }) if message == "KURRENT_PASSWORD environment variable is required" && param == "password"
         ));
     }
 }
-

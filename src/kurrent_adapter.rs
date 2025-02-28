@@ -1,38 +1,111 @@
+//! Event store implementation for persisting and retrieving events.
+//!
+//! This module provides the core event store functionality for the event sourcing system.
+//! It handles:
+//! - Event persistence
+//! - Stream management
+//! - Event retrieval
+//! - Optimistic concurrency control
+//!
+//! # Examples
+//!
+//! Basic event store operations:
+//!
+//! ```rust,no_run
+//! use mneme::{EventStore, ConnectionSettings, Event, EventStreamId};
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! enum OrderEvent {
+//!     Created { id: String }
+//! }
+//!
+//! impl Event for OrderEvent {
+//!     fn event_type(&self) -> String {
+//!         match self {
+//!             OrderEvent::Created { .. } => "OrderCreated".to_string()
+//!         }
+//!     }
+//! }
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! // Initialize from environment
+//! let settings = ConnectionSettings::from_env()?;
+//! let store = EventStore::new(&settings)?;
+//!
+//! // Read from a stream
+//! let stream_id = EventStreamId::new();
+//! let mut stream = store
+//!     .stream_builder(stream_id.clone())
+//!     .max_count(100)
+//!     .read::<OrderEvent>()
+//!     .await?;
+//!
+//! while let Some((event, version)) = stream.next().await? {
+//!     println!("Event at version {}: {:?}", version.value(), event);
+//! }
+//!
+//! // Write to a stream
+//! let events = vec![OrderEvent::Created {
+//!     id: "order-123".to_string()
+//! }];
+//!
+//! store.stream_writer(stream_id)
+//!     .append(events)
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Using optimistic concurrency:
+//!
+//! ```rust,no_run
+//! # use mneme::{EventStore, ConnectionSettings, Event, EventStreamId};
+//! # use serde::{Serialize, Deserialize};
+//! # #[derive(Debug, Serialize, Deserialize)]
+//! # enum OrderEvent {
+//! #     Created { id: String }
+//! # }
+//! # impl Event for OrderEvent {
+//! #     fn event_type(&self) -> String {
+//! #         "OrderCreated".to_string()
+//! #     }
+//! # }
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # let settings = ConnectionSettings::from_env()?;
+//! # let store = EventStore::new(&settings)?;
+//! let stream_id = EventStreamId::new();
+//! let events = vec![OrderEvent::Created {
+//!     id: "order-123".to_string()
+//! }];
+//!
+//! // Write only if stream is at version 5
+//! store.stream_writer(stream_id)
+//!     .expected_version(5)
+//!     .append(events)
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+
+mod settings;
+mod stream;
+
+pub use settings::ConnectionSettings;
+pub use stream::{EventStream, EventStreamId, EventStreamVersion};
+
 use crate::error::Error;
 use crate::event::Event;
-use crate::store::settings::ConnectionSettings;
-use crate::store::stream::{EventStream, EventStreamId};
+use crate::event_store::EventStore;
+
 use eventstore::AppendToStreamOptions;
 
-use super::EventStreamVersion;
-
 #[derive(Clone)]
-pub struct EventStore {
+pub struct Kurrent {
     pub client: eventstore::Client,
 }
 
-pub trait EventStoreOps {
-    fn append_to_stream(
-        &mut self,
-        stream_id: EventStreamId,
-        options: &AppendToStreamOptions,
-        events: Vec<eventstore::EventData>,
-    ) -> impl std::future::Future<Output = Result<eventstore::WriteResult, Error>> + Send;
-
-    fn publish<E: Event>(
-        &mut self,
-        stream_id: EventStreamId,
-        events: Vec<E>,
-        options: &AppendToStreamOptions,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
-
-    fn read_stream<E: Event>(
-        &self,
-        stream_id: EventStreamId,
-    ) -> impl std::future::Future<Output = Result<EventStream<E>, Error>> + Send;
-}
-
-impl EventStore {
+impl Kurrent {
     /// Creates a new EventStore instance using the provided connection settings.
     pub fn new(settings: &ConnectionSettings) -> Result<Self, Error> {
         let client = eventstore::Client::new(settings.to_client_settings()?)?;
@@ -61,7 +134,7 @@ impl EventStore {
     }
 }
 
-impl EventStoreOps for EventStore {
+impl EventStore for Kurrent {
     async fn append_to_stream(
         &mut self,
         stream_id: EventStreamId,
@@ -125,13 +198,13 @@ impl EventStoreOps for EventStore {
 }
 
 pub struct EventStreamBuilder {
-    store: EventStore,
+    store: Kurrent,
     stream_id: EventStreamId,
     read_options: eventstore::ReadStreamOptions,
 }
 
 impl EventStreamBuilder {
-    pub fn new(store: EventStore, stream_id: EventStreamId) -> Self {
+    pub fn new(store: Kurrent, stream_id: EventStreamId) -> Self {
         Self {
             store,
             stream_id,
@@ -170,13 +243,13 @@ impl EventStreamBuilder {
 }
 
 pub struct EventStreamWriter {
-    store: EventStore,
+    store: Kurrent,
     stream_id: EventStreamId,
     write_options: AppendToStreamOptions,
 }
 
 impl EventStreamWriter {
-    pub fn new(store: EventStore, stream_id: EventStreamId) -> Self {
+    pub fn new(store: Kurrent, stream_id: EventStreamId) -> Self {
         Self {
             store,
             stream_id,
@@ -249,4 +322,3 @@ fn extract_current_revision(current: &eventstore::CurrentRevision) -> Option<Eve
         _ => None,
     }
 }
-

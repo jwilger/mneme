@@ -1,18 +1,18 @@
+use mneme::ExecuteConfig;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use uuid::Uuid;
 
+use mneme::EventStore;
 use mneme::{AggregateState, Command, Error, Event, EventStreamVersion, execute};
-use mneme::{
-    ConnectionSettings, EventStore, EventStoreOps, EventStream, EventStreamId, ExecuteConfig,
-};
+use mneme::{ConnectionSettings, EventStream, EventStreamId, Kurrent};
 
 mod test_helpers {
     use super::*;
 
-    pub fn create_test_store() -> EventStore {
+    pub fn create_test_store() -> Kurrent {
         let settings = ConnectionSettings::builder()
             .host("localhost")
             .port(2113)
@@ -22,10 +22,10 @@ mod test_helpers {
             .build()
             .expect("Failed to build connection settings");
 
-        EventStore::new(&settings).expect("Failed to connect to event store")
+        Kurrent::new(&settings).expect("Failed to connect to event store")
     }
 
-    pub fn create_invalid_test_store() -> EventStore {
+    pub fn create_invalid_test_store() -> Kurrent {
         let settings = ConnectionSettings::builder()
             .host("localhost")
             .port(2114) // Invalid port
@@ -35,7 +35,7 @@ mod test_helpers {
             .build()
             .expect("Failed to build connection settings");
 
-        EventStore::new(&settings).expect("Failed to connect to event store")
+        Kurrent::new(&settings).expect("Failed to connect to event store")
     }
 }
 
@@ -46,13 +46,13 @@ type OnFirstAppendFn =
 
 /// A test helper that intercepts event store operations for testing concurrent modifications
 struct TestEventStore {
-    inner: EventStore,
+    inner: Kurrent,
     on_first_append: Option<Box<OnFirstAppendFn>>,
     has_appended: bool,
 }
 
 impl TestEventStore {
-    fn new(inner: EventStore) -> Self {
+    fn new(inner: Kurrent) -> Self {
         Self {
             inner,
             on_first_append: None,
@@ -69,7 +69,7 @@ impl TestEventStore {
     }
 }
 
-impl EventStoreOps for TestEventStore {
+impl EventStore for TestEventStore {
     async fn append_to_stream(
         &mut self,
         stream_id: EventStreamId,
@@ -115,7 +115,7 @@ impl EventStoreOps for TestEventStore {
 }
 
 impl std::ops::Deref for TestEventStore {
-    type Target = EventStore;
+    type Target = Kurrent;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
