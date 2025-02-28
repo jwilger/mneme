@@ -6,14 +6,7 @@ edition = "2024"
 description = "An event-sourcing library for Rust projects."
 repository = "https://github.com/jwilger/mneme"
 license = "MIT"
-keywords = [
-  "data",
-  "events",
-  "event-sourcing",
-  "cqrs",
-  "eventstoredb",
-  "kurrent",
-]
+keywords = ["events", "event-sourcing", "cqrs", "eventstoredb", "kurrent"]
 
 [badges]
 maintenance = { status = "actively-developed" }
