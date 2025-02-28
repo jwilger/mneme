@@ -117,13 +117,8 @@ where
     // Create metrics for this execution
     let mut retries = 0;
     let mut command = command;
-    tracing::debug!(
-        stream_id = ?command.event_stream_id().0,
-        "Starting execute function"
-    );
 
     let result = loop {
-        tracing::debug!(attempt = retries + 1, "Processing command");
         if retries > config.max_retries() {
             break Err(Error::MaxRetriesExceeded {
                 stream: command.event_stream_id().to_string(),
@@ -188,7 +183,6 @@ where
                 Err(Error::EventStoreVersionMismatch { .. }) => {
                     // Calculate delay with exponential backoff and jitter
                     let delay = config.retry_delay().calculate_delay(retries);
-                    tracing::debug!(delay_ms = ?delay.as_millis(), "Retrying after delay");
                     tokio::time::sleep(delay).await;
 
                     // Mark command as being retried and increment retry counter
