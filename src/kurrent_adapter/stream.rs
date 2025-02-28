@@ -17,7 +17,10 @@ pub struct EventStream<E: Event> {
 
 impl<E: Event> EventStream<E> {
     pub async fn next(&mut self) -> Result<Option<(E, EventStreamVersion)>, Error> {
-        match self.stream.next().await.map_err(Error::EventStoreOther)? {
+        match self.stream.next().await.or_else(|err| match err {
+            eventstore::Error::ResourceNotFound => Ok(None),
+            other => Err(other),
+        })? {
             None => Ok(None),
             Some(resolved) => {
                 let original = resolved.get_original_event();

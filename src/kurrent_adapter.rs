@@ -62,7 +62,7 @@ impl EventStore for Kurrent {
         &mut self,
         stream_id: EventStreamId,
         events: Vec<E>,
-        options: &AppendToStreamOptions,
+        expected_version: Option<EventStreamVersion>,
     ) -> Result<(), Error> {
         let events: Vec<eventstore::EventData> = events
             .iter()
@@ -73,7 +73,12 @@ impl EventStore for Kurrent {
             })
             .collect::<Result<_, _>>()?;
 
-        self.append_to_stream(stream_id, options, events).await?;
+        let options = AppendToStreamOptions::default().expected_revision(match expected_version {
+            Some(v) => eventstore::ExpectedRevision::Exact(v.value()),
+            None => eventstore::ExpectedRevision::Any,
+        });
+
+        self.append_to_stream(stream_id, &options, events).await?;
         Ok(())
     }
 

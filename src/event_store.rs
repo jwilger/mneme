@@ -1,4 +1,3 @@
-use eventstore::AppendToStreamOptions;
 use uuid::Uuid;
 
 use crate::{Error, Event, EventStream};
@@ -8,7 +7,7 @@ pub trait EventStore {
         &mut self,
         stream_id: EventStreamId,
         events: Vec<E>,
-        options: &AppendToStreamOptions,
+        expected_version: Option<EventStreamVersion>,
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
     fn read_stream<E: Event>(

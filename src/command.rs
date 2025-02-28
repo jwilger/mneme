@@ -1,3 +1,4 @@
+use crate::EventStreamVersion;
 use crate::event::Event;
 use crate::event_store::EventStreamId;
 use std::fmt::Debug;
@@ -21,7 +22,7 @@ pub trait Command<E: Event> {
         self.clone()
     }
 
-    fn override_expected_version(&self) -> Option<u64> {
+    fn override_expected_version(&self) -> Option<EventStreamVersion> {
         None
     }
 
