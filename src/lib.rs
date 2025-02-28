@@ -1,510 +1,436 @@
-use nutype::nutype;
-use std::fmt::Debug;
-use std::{collections::HashMap, error::Error};
-use tokio_stream::{Stream, StreamExt};
+mod command;
+mod config;
+mod delay;
+mod error;
+mod event;
+mod event_store;
+mod kurrent_adapter;
 
-/// Represents an error that occurs during storage operations.
-#[derive(Clone, thiserror::Error, Debug)]
-pub enum StorageError {
-    #[error("Event stream version mismatch: expected {expected:?}, received {received:?}")]
-    VersionMismatch {
-        expected: AggregateStreamVersions,
-        received: AggregateStreamVersions,
-    },
-    #[error("Event-storage error: {0}")]
-    Other(String),
-}
+pub use command::{AggregateState, Command};
+pub use config::ExecuteConfig;
+pub use error::Error;
+pub use event::Event;
+pub use event_store::{EventStore, EventStreamId, EventStreamVersion};
+pub use kurrent_adapter::{ConnectionSettings, EventStream, Kurrent};
 
-/// Represents an identifier for an event stream.
-///
-/// This struct ensures that the identifier is trimmed and not empty.
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Clone, Debug, Eq, Hash, PartialEq)
-)]
-pub struct EventStreamId(String);
-
-#[cfg(test)]
-impl EventStreamId {
-    /// Creates a new `EventStreamId` for testing purposes.
-    ///
-    /// Not available in the public API.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - A string value to be used as the event stream ID.
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if the provided value is not a valid event stream ID.
-    fn new_test(value: String) -> Self {
-        match Self::try_new(value) {
-            Ok(id) => id,
-            Err(_) => panic!("Invalid event stream ID"),
-        }
-    }
-}
-
-#[nutype(derive(Debug, Clone, PartialEq))]
-pub struct EventStreamVersion(u64);
-
-#[derive(Clone, Debug)]
-pub struct AggregateStreamVersions(HashMap<EventStreamId, EventStreamVersion>);
-impl AggregateStreamVersions {
-    pub fn update(&mut self, stream_id: EventStreamId, stream_version: EventStreamVersion) {
-        self.0.insert(stream_id, stream_version);
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct EventEnvelope<T> {
-    pub event: T,
-    pub stream_id: EventStreamId,
-    pub stream_version: EventStreamVersion,
-}
-
-/// Represents a query for event streams.
-#[derive(Debug, Default, PartialEq)]
-pub struct EventStreamQuery {
-    /// Represents the list of event stream IDs to be queried.
-    pub stream_ids: Vec<EventStreamId>,
-}
-
-/// A trait representing an event store.
-pub trait EventStore {
-    /// The type of event stored.
-    type Event;
-
-    /// Publishes a list of events to the store.
-    ///
-    /// # Arguments
-    ///
-    /// * `events` - A vector of events to be published.
-    ///
-    /// # Returns
-    ///
-    /// A result indicating success or a `StorageError`.
-    fn publish(
-        &mut self,
-        events: Vec<Self::Event>,
-        expected_version: AggregateStreamVersions,
-    ) -> impl std::future::Future<Output = Result<(), StorageError>> + Send;
-
-    /// Reads the event stream based on the provided query.
-    ///
-    /// # Arguments
-    ///
-    /// * `query` - An optional `EventStreamQuery` to filter the events.
-    ///
-    /// # Returns
-    ///
-    /// A result containing an iterator over the events or a `StorageError`.
-    fn read_stream(
-        &self,
-        query: EventStreamQuery,
-    ) -> impl std::future::Future<
-        Output = Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError>,
-    > + Send;
-}
-
-/// A trait representing the state of an aggregate that can be modified by applying events.
-///
-/// # Type Parameters
-///
-/// * `E` - The type of events that can be applied to the state.
-pub trait AggregateState<E>: Default {
-    /// Applies an event to the current state and returns the new state.
-    ///
-    /// # Arguments
-    ///
-    /// * `event` - The event to be applied.
-    ///
-    /// # Returns
-    ///
-    /// The new state after the event has been applied.
-    fn apply_event(self, event: E) -> Self;
-}
-
-/// A struct representing a stateless aggregate.
-#[derive(Default)]
-pub struct Stateless;
-
-/// Implementation of the `AggregateState` trait for the `Stateless` struct.
-///
-/// This implementation does not modify the state when an event is applied.
-impl<E> AggregateState<E> for Stateless {
-    fn apply_event(self, _event: E) -> Self {
-        Self
-    }
-}
-
-/// A trait representing a command that can be handled.
-pub trait Command {
-    /// The type of event produced by the command.
-    type Event;
-    /// The type of error that can occur while handling the command.
-    type Error: Error + Clone + From<StorageError>;
-    /// The context provided in case of a failure.
-    type FailureContext;
-    /// The aggregate state into which events are folded for stateful commands
-    type State: AggregateState<Self::Event>;
-
-    /// Handles the command and produces a list of events.
-    ///
-    /// # Returns
-    ///
-    /// A result containing a vector of events or an error.
-    fn handle(&self, state: Self::State) -> Result<Vec<Self::Event>, Self::Error>;
-
-    fn event_stream_query(&self) -> Option<EventStreamQuery> {
-        None
-    }
-
-    /// Handles an error that occurred while processing the command.
-    ///
-    /// # Arguments
-    ///
-    /// * `error` - The error that occurred.
-    /// * `failure_context` - An optional context for the failure.
-    ///
-    /// # Returns
-    ///
-    /// A result containing an optional failure context or an error.
-    fn handle_error(
-        &self,
-        _error: &Self::Error,
-        _failure_context: Option<Self::FailureContext>,
-    ) -> Result<Option<Self::FailureContext>, Self::Error> {
-        Ok(None)
-    }
-}
-
-/// Executes a command and publishes the resulting events to an event store.
-///
-/// # Arguments
-///
-/// * `command` - The command to be executed.
-/// * `event_store` - The event store where events will be published.
-/// * `failure_context` - An optional context for handling failures.
-///
-/// # Returns
-///
-/// A result indicating success or an error.
-///
-/// # Type Parameters
-///
-/// * `C` - The type of the command.
-/// * `S` - The type of the event store.
-pub async fn execute<C, S>(
+pub async fn execute<E, C, S>(
     command: C,
     event_store: &mut S,
-    mut failure_context: Option<C::FailureContext>,
-) -> Result<(), C::Error>
+    config: ExecuteConfig,
+) -> Result<(), Error>
 where
-    C: Command,
-    S: EventStore<Event = C::Event>,
+    E: Event,
+    C: Command<E> + Clone + Send,
+    S: EventStore + Send,
 {
-    loop {
-        // until either the command succeeds or handle_error tells us to stop
-        let (state, expected_version) = build_state(&command, event_store).await?;
-        let events = command.handle(state)?;
-        match event_store
-            .publish(events, expected_version)
-            .await
-            .map_err(C::Error::from)
-        {
-            Err(error) => match command.handle_error(&error, failure_context)? {
-                Some(updated_failure_context) => {
-                    failure_context = Some(updated_failure_context);
-                }
-                None => return Err(error),
-            },
-            Ok(_) => return Ok(()),
-        }
-    }
-}
+    let mut retries = 0;
+    let mut command = command;
 
-async fn build_state<C, S>(
-    command: &C,
-    event_store: &mut S,
-) -> Result<(C::State, AggregateStreamVersions), StorageError>
-where
-    C: Command,
-    S: EventStore<Event = C::Event>,
-{
-    let mut version = AggregateStreamVersions(HashMap::new());
-    let state = match command.event_stream_query() {
-        None => C::State::default(),
-        Some(stream_query) => {
-            event_store
-                .read_stream(stream_query)
-                .await?
-                .fold(C::State::default(), |state, event_envelope| {
-                    version.update(event_envelope.stream_id, event_envelope.stream_version);
-                    state.apply_event(event_envelope.event)
-                })
-                .await
+    let result = loop {
+        if retries > config.max_retries() {
+            break Err(Error::MaxRetriesExceeded {
+                stream: command.event_stream_id().to_string(),
+                max_retries: config.max_retries(),
+            });
         }
+
+        let mut expected_version = None;
+
+        let read_result = event_store.read_stream(command.event_stream_id()).await;
+
+        match read_result {
+            Err(other) => {
+                break Err(other);
+            }
+
+            Ok(mut event_stream) => {
+                while let Some((event, version)) = event_stream.next().await? {
+                    command = command.apply(event);
+                    expected_version = Some(version);
+                }
+            }
+        }
+
+        let domain_events = match command.handle() {
+            Ok(events) => events,
+            Err(e) => {
+                break Err(Error::CommandFailed {
+                    message: e.to_string(),
+                    attempt: retries + 1,
+                    max_attempts: config.max_retries(),
+                    source: Box::new(e),
+                });
+            }
+        };
+
+        if !domain_events.is_empty() {
+            let expected_version = expected_version;
+
+            #[cfg(test)]
+            let expected_version = match (command.override_expected_version(), expected_version) {
+                (Some(v), _) => Some(v),
+                (None, Some(v)) => Some(v),
+                (None, None) => None,
+            };
+
+            match event_store
+                .publish(command.event_stream_id(), domain_events, expected_version)
+                .await
+            {
+                Ok(_) => {
+                    break Ok(());
+                }
+                Err(Error::EventStoreVersionMismatch { .. }) => {
+                    let delay = config.retry_delay().calculate_delay(retries);
+                    tokio::time::sleep(delay).await;
+
+                    command = command.mark_retry();
+                    retries += 1;
+                    continue;
+                }
+                Err(e) => {
+                    break Err(e);
+                }
+            }
+        }
+
+        break Ok(());
     };
-    Ok((state, version))
+
+    result
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{convert::Infallible, pin::Pin};
+
+    use serde::{Deserialize, Serialize};
+    use uuid::Uuid;
+
     use super::*;
-    use std::fmt::Debug;
-    use std::sync::LazyLock;
-    use thiserror::Error;
 
-    #[derive(Clone, Debug, Error)]
-    enum ExecutionError {
-        #[error("Storage error: {0}")]
-        StorageError(#[from] StorageError),
-        #[error("Rejected")]
-        Rejected,
+    pub fn create_test_store() -> Kurrent {
+        let settings = ConnectionSettings::builder()
+            .host("localhost")
+            .port(2113)
+            .tls(false)
+            .username("admin")
+            .password("changeit")
+            .build()
+            .expect("Failed to build connection settings");
+
+        Kurrent::new(&settings).expect("Failed to connect to event store")
     }
 
-    struct FailureContext;
+    pub fn create_invalid_test_store() -> Kurrent {
+        let settings = ConnectionSettings::builder()
+            .host("localhost")
+            .port(2114) // Invalid port
+            .tls(false)
+            .username("admin")
+            .password("changeit")
+            .build()
+            .expect("Failed to build connection settings");
 
-    struct NoopCommand {
-        id: i32,
+        Kurrent::new(&settings).expect("Failed to connect to event store")
     }
-    impl NoopCommand {
-        fn new(id: i32) -> Self {
-            NoopCommand { id }
-        }
-    }
-    impl Command for NoopCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
-        type State = Stateless;
 
-        fn handle(&self, _state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            match self.id {
-                456 => Err(ExecutionError::Rejected),
-                _ => Ok(vec![]),
+    #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+    enum TestEvent {
+        One { id: Uuid },
+        Two { id: Uuid },
+        FooHappened { id: Uuid, value: u16 },
+        BarHappened { id: Uuid, value: u16 },
+        BazHappened { id: Uuid, value: u32 },
+    }
+
+    impl Event for TestEvent {
+        fn event_type(&self) -> String {
+            match self {
+                TestEvent::One { .. } => "TestEvent.One".to_string(),
+                TestEvent::Two { .. } => "TestEvent.Two".to_string(),
+                TestEvent::FooHappened { .. } => "TestEvent.FooHappened".to_string(),
+                TestEvent::BarHappened { .. } => "TestEvent.BarHappened".to_string(),
+                TestEvent::BazHappened { .. } => "TestEvent.BazHappened".to_string(),
             }
         }
     }
 
-    #[derive(Clone, Debug, PartialEq)]
-    enum DomainEvent {
-        FooHappened(u64),
-        BarHappened(u64),
-        BazHappened { id: u64, value: u64 },
-        CommandRecovered,
+    #[derive(Clone)]
+    struct AlwaysConflictingCommand {
+        id: Uuid,
+        retries: u32,
     }
 
-    static STREAM_ID: LazyLock<EventStreamId> =
-        LazyLock::new(|| EventStreamId::new_test("thing.123".to_string()));
-
-    #[derive(Debug, PartialEq)]
-    struct EventStoreImpl {
-        events: Vec<EventEnvelope<DomainEvent>>,
-        should_fail: bool,
-        expected_stream_query: Option<EventStreamQuery>,
+    impl AlwaysConflictingCommand {
+        fn new(id: Uuid) -> Self {
+            Self { id, retries: 0 }
+        }
     }
-    impl EventStoreImpl {
-        fn new() -> Self {
-            EventStoreImpl {
-                events: vec![],
-                should_fail: false,
-                expected_stream_query: None,
+
+    impl Command<TestEvent> for AlwaysConflictingCommand {
+        type State = ();
+        type Error = Error;
+
+        fn get_state(&self) -> Self::State {}
+        fn set_state(&self, _: Self::State) -> Self {
+            (*self).clone()
+        }
+        fn event_stream_id(&self) -> EventStreamId {
+            EventStreamId(self.id)
+        }
+
+        fn handle(&self) -> Result<Vec<TestEvent>, Self::Error> {
+            Ok(vec![TestEvent::One { id: self.id }])
+        }
+
+        fn mark_retry(&self) -> Self {
+            let mut new = (*self).clone();
+            new.retries += 1;
+            new
+        }
+
+        fn override_expected_version(&self) -> Option<EventStreamVersion> {
+            Some(EventStreamVersion::new(0))
+        }
+    }
+
+    #[tokio::test]
+    async fn command_fails_after_max_retries() {
+        let mut event_store = create_test_store();
+        let id = Uuid::new_v4();
+
+        event_store
+            .publish(EventStreamId(id), vec![TestEvent::One { id }], None)
+            .await
+            .unwrap();
+
+        for _ in 0..10 {
+            event_store
+                .publish(EventStreamId(id), vec![TestEvent::One { id }], None)
+                .await
+                .unwrap();
+        }
+
+        let command = AlwaysConflictingCommand::new(id);
+        match execute(command, &mut event_store, Default::default()).await {
+            Err(Error::MaxRetriesExceeded {
+                max_retries,
+                stream,
+            }) => {
+                assert_eq!(max_retries, ExecuteConfig::default().max_retries());
+                assert_eq!(stream, id.to_string());
+            }
+            other => panic!(
+                "Expected command to fail with max retries, got: {:?}",
+                other
+            ),
+        }
+    }
+    type OnFirstAppendFn =
+        dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> + Send + Sync;
+
+    /// A test helper that intercepts event store operations for testing concurrent modifications
+    struct TestEventStore {
+        inner: Kurrent,
+        on_first_append: Option<Box<OnFirstAppendFn>>,
+        has_appended: bool,
+    }
+
+    impl TestEventStore {
+        fn new(inner: Kurrent) -> Self {
+            Self {
+                inner,
+                on_first_append: None,
+                has_appended: false,
             }
         }
 
-        fn produce_error_for_next_publish(&mut self) {
-            self.should_fail = true;
+        fn on_first_append<F, Fut>(&mut self, f: F)
+        where
+            F: FnOnce() -> Fut + Send + Sync + 'static,
+            Fut: Future<Output = Result<(), Error>> + Send + 'static,
+        {
+            self.on_first_append = Some(Box::new(move || Box::pin(f())));
         }
 
-        fn expect_stream_query(&mut self, query: EventStreamQuery, events: Vec<DomainEvent>) {
-            self.events = events
+        async fn append_to_stream(
+            &mut self,
+            stream_id: EventStreamId,
+            expected_version: Option<EventStreamVersion>,
+            events: Vec<eventstore::EventData>,
+        ) -> Result<eventstore::WriteResult, Error> {
+            // If we have a hook and this is the first append, run it before continuing
+            if !self.has_appended {
+                self.has_appended = true;
+                if let Some(hook) = self.on_first_append.take() {
+                    let fut = hook();
+                    fut.await?;
+                }
+            }
+            let options = eventstore::AppendToStreamOptions::default().expected_revision(
+                match expected_version {
+                    Some(v) => eventstore::ExpectedRevision::Exact(v.value()),
+                    None => eventstore::ExpectedRevision::Any,
+                },
+            );
+            self.inner
+                .append_to_stream(stream_id, &options, events)
+                .await
+        }
+    }
+
+    impl EventStore for TestEventStore {
+        async fn publish<E: Event>(
+            &mut self,
+            stream_id: EventStreamId,
+            events: Vec<E>,
+            expected_version: Option<EventStreamVersion>,
+        ) -> Result<(), Error> {
+            let events: Vec<eventstore::EventData> = events
                 .iter()
-                .enumerate()
-                .map(|(stream_version, event)| {
-                    let stream_version = EventStreamVersion::new(stream_version as u64);
-                    EventEnvelope {
-                        event: event.clone(),
-                        stream_version: stream_version.clone(),
-                        stream_id: STREAM_ID.clone(),
-                    }
+                .map(|event| {
+                    eventstore::EventData::json(event.event_type(), &event)
+                        .expect("unable to serialize event")
                 })
                 .collect();
-            self.expected_stream_query = Some(query);
-        }
-    }
-    impl EventStore for EventStoreImpl {
-        type Event = DomainEvent;
-
-        async fn publish(
-            &mut self,
-            events: Vec<Self::Event>,
-            _expected_version: AggregateStreamVersions,
-        ) -> Result<(), StorageError> {
-            if self.should_fail {
-                self.should_fail = false;
-                return Err(StorageError::Other("Failed to store events".to_string()));
-            }
-            let starting_version = match self.events.len() as u64 {
-                0 => 0,
-                1 => 0,
-                x => x,
-            };
-            events
-                .iter()
-                .enumerate()
-                .map(|(stream_version, event)| {
-                    let stream_version =
-                        EventStreamVersion::new(starting_version + stream_version as u64);
-                    EventEnvelope {
-                        event: event.clone(),
-                        stream_version: stream_version.clone(),
-                        stream_id: STREAM_ID.clone(),
-                    }
-                })
-                .for_each(|event| self.events.push(event));
+            self.append_to_stream(stream_id, expected_version, events)
+                .await?;
             Ok(())
         }
 
-        async fn read_stream(
+        async fn read_stream<E: Event>(
             &self,
-            query: EventStreamQuery,
-        ) -> Result<impl Stream<Item = EventEnvelope<Self::Event>>, StorageError> {
-            let expected_query = &self.expected_stream_query;
-            assert_eq!(Some(query), *expected_query);
-            Ok(tokio_stream::iter(self.events.clone()))
+            stream_id: EventStreamId,
+        ) -> Result<EventStream<E>, Error> {
+            self.inner.read_stream(stream_id).await
         }
     }
 
-    struct EventProducingCommand;
-    impl EventProducingCommand {
-        fn new() -> Self {
-            EventProducingCommand
+    impl std::ops::Deref for TestEventStore {
+        type Target = Kurrent;
+
+        fn deref(&self) -> &Self::Target {
+            &self.inner
         }
     }
 
-    impl Command for EventProducingCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
-        type State = Stateless;
-
-        fn handle(&self, _state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            Ok(vec![
-                DomainEvent::FooHappened(123),
-                DomainEvent::BarHappened(123),
-            ])
+    impl std::ops::DerefMut for TestEventStore {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.inner
         }
     }
 
-    struct RecoveringCommand;
-    impl RecoveringCommand {
-        fn new() -> Self {
-            RecoveringCommand
-        }
-    }
-    impl Command for RecoveringCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
-        type State = Stateless;
-
-        fn handle(&self, _state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            Ok(vec![DomainEvent::CommandRecovered])
-        }
-
-        fn handle_error(
-            &self,
-            error: &Self::Error,
-            _failure_context: Option<Self::FailureContext>,
-        ) -> Result<Option<Self::FailureContext>, Self::Error> {
-            match error {
-                ExecutionError::StorageError(_) => Ok(Some(FailureContext)),
-                _ => Err(error.clone()),
-            }
-        }
+    struct ConcurrentModificationCommand {
+        id: Uuid,
+        state: StatefulCommandState,
     }
 
-    #[derive(Default)]
-    struct StatefulCommandState(u64);
-    impl AggregateState<DomainEvent> for StatefulCommandState {
-        fn apply_event(self, event: DomainEvent) -> Self {
-            match event {
-                DomainEvent::FooHappened(id) => StatefulCommandState(id),
-                DomainEvent::BarHappened(id) => StatefulCommandState(id),
-                DomainEvent::BazHappened { id: _id, value } => StatefulCommandState(value),
-                DomainEvent::CommandRecovered => StatefulCommandState(0),
-            }
-        }
-    }
-    struct StatefulCommand(u64);
-    impl StatefulCommand {
-        fn new(id: u64) -> Self {
-            StatefulCommand(id)
-        }
-    }
-    impl Command for StatefulCommand {
-        type Event = DomainEvent;
-        type Error = ExecutionError;
-        type FailureContext = FailureContext;
+    impl Command<TestEvent> for ConcurrentModificationCommand {
         type State = StatefulCommandState;
+        type Error = Error;
 
-        fn handle(&self, state: Self::State) -> Result<Vec<Self::Event>, Self::Error> {
-            Ok(vec![DomainEvent::BazHappened {
-                id: self.0,
-                value: state.0 * 2,
+        fn get_state(&self) -> Self::State {
+            self.state.clone()
+        }
+
+        fn set_state(&self, state: Self::State) -> Self {
+            let mut new = (*self).clone();
+            new.state = state;
+            new
+        }
+
+        fn event_stream_id(&self) -> EventStreamId {
+            EventStreamId(self.id)
+        }
+
+        fn handle(&self) -> Result<Vec<TestEvent>, Self::Error> {
+            Ok(vec![TestEvent::BazHappened {
+                id: self.id,
+                value: self.state.foo.unwrap() as u32 + self.state.bar.unwrap() as u32,
             }])
         }
+    }
 
-        fn event_stream_query(&self) -> Option<EventStreamQuery> {
-            Some(EventStreamQuery {
-                stream_ids: vec![EventStreamId::new_test(format!("thing.{}", self.0))],
-            })
+    impl Clone for ConcurrentModificationCommand {
+        fn clone(&self) -> Self {
+            Self {
+                id: self.id,
+                state: self.state.clone(),
+            }
         }
     }
 
-    #[tokio::test]
-    async fn successful_command_execution_with_no_events_produced() {
-        let mut event_store = EventStoreImpl::new();
-        let command = NoopCommand::new(123);
-        match execute(command, &mut event_store, None).await {
-            Ok(()) => (),
-            other => panic!("Unexpected result: {:?}", other),
+    impl ConcurrentModificationCommand {
+        fn new(id: Uuid) -> Self {
+            Self {
+                id,
+                state: StatefulCommandState {
+                    foo: None,
+                    bar: None,
+                },
+            }
         }
     }
 
-    #[tokio::test]
-    async fn command_rejection_error() {
-        let mut event_store = EventStoreImpl::new();
-        let command = NoopCommand::new(456);
-        match execute(command, &mut event_store, None).await {
-            Err(ExecutionError::Rejected) => (),
-            other => panic!("Unexpected result: {:?}", other),
-        }
+    #[derive(Clone, Debug)]
+    struct StatefulCommandState {
+        foo: Option<u16>,
+        bar: Option<u16>,
     }
 
+    impl AggregateState<TestEvent> for StatefulCommandState {
+        fn apply(&self, event: TestEvent) -> Self {
+            match event {
+                TestEvent::FooHappened { value, .. } => Self {
+                    foo: Some(value),
+                    ..*self
+                },
+                TestEvent::BarHappened { value, .. } => Self {
+                    bar: Some(value),
+                    ..*self
+                },
+                _ => Self { ..*self },
+            }
+        }
+    }
     #[tokio::test]
-    async fn successful_execution_with_events_will_record_events() {
-        let mut event_store = EventStoreImpl::new();
-        assert_eq!(event_store.events, vec![]);
-        let command = EventProducingCommand::new();
-        match execute(command, &mut event_store, None).await {
+    async fn retries_on_append_version_mismatch() {
+        let mut event_store = create_test_store();
+        let id = Uuid::new_v4();
+
+        let initial_events = vec![
+            TestEvent::FooHappened { id, value: 42 },
+            TestEvent::BarHappened { id, value: 24 },
+        ];
+        event_store
+            .publish(EventStreamId(id), initial_events, None)
+            .await
+            .unwrap();
+
+        let mut test_store = TestEventStore::new(event_store);
+        let store_for_hook = test_store.inner.clone();
+
+        test_store.on_first_append(move || {
+            let concurrent_event = vec![TestEvent::FooHappened { id, value: 100 }];
+            let mut store = store_for_hook;
+            async move {
+                store
+                    .publish(EventStreamId(id), concurrent_event, None)
+                    .await
+            }
+        });
+
+        let command = ConcurrentModificationCommand::new(id);
+        match execute(command, &mut test_store, Default::default()).await {
             Ok(()) => {
                 assert_eq!(
-                    event_store.events,
+                    read_client_events(&test_store.client, EventStreamId(id)).await,
                     vec![
-                        EventEnvelope {
-                            event: DomainEvent::FooHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(0),
-                        },
-                        EventEnvelope {
-                            event: DomainEvent::BarHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(1),
-                        },
+                        TestEvent::FooHappened { id, value: 42 },
+                        TestEvent::BarHappened { id, value: 24 },
+                        TestEvent::FooHappened { id, value: 100 },
+                        TestEvent::BazHappened { id, value: 124 }
                     ]
                 )
             }
@@ -512,74 +438,131 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn event_storeage_error_surfaced_as_execution_error() {
-        let mut event_store = EventStoreImpl::new();
-        event_store.produce_error_for_next_publish();
-        let command = EventProducingCommand::new();
-        match execute(command, &mut event_store, None).await {
-            Err(ExecutionError::StorageError(_)) => (),
-            other => panic!("Unexpected result: {:?}", other),
+    async fn read_client_events(
+        client: &eventstore::Client,
+        stream_id: EventStreamId,
+    ) -> Vec<TestEvent> {
+        let mut stream = client
+            .read_stream(stream_id.clone(), &Default::default())
+            .await
+            .expect("failed to read stream");
+        let mut events = vec![];
+        while let Some(event) = stream.next().await.expect("failed to get next event") {
+            events.push(
+                event
+                    .get_original_event()
+                    .as_json::<TestEvent>()
+                    .expect("failed to deserialize event"),
+            );
         }
+        events
     }
 
-    #[tokio::test]
-    async fn allow_command_to_handle_execution_errors() {
-        let mut event_store = EventStoreImpl::new();
-        event_store.produce_error_for_next_publish();
-        let command = RecoveringCommand::new();
-        match execute(command, &mut event_store, None).await {
-            Ok(()) => assert_eq!(
-                event_store.events,
-                vec![EventEnvelope {
-                    event: DomainEvent::CommandRecovered,
-                    stream_id: STREAM_ID.clone(),
-                    stream_version: EventStreamVersion::new(0),
-                },]
-            ),
-            other => panic!("Unexpected result: {:?}", other),
-        }
+    #[derive(Clone)]
+    struct EventProducingCommand {
+        id: Uuid,
     }
 
-    #[tokio::test]
-    async fn existing_events_are_available_to_handler() {
-        let mut event_store = EventStoreImpl::new();
-        let stream_query = EventStreamQuery {
-            stream_ids: vec![EventStreamId::new_test("thing.123".into())],
-        };
-        event_store.expect_stream_query(
-            stream_query,
-            vec![DomainEvent::FooHappened(123), DomainEvent::BarHappened(123)],
-        );
+    impl Command<TestEvent> for EventProducingCommand {
+        type State = ();
+        type Error = Infallible;
 
-        let command = StatefulCommand::new(123);
-        match execute(command, &mut event_store, None).await {
-            Ok(()) => {
-                assert_eq!(
-                    event_store.events,
-                    vec![
-                        EventEnvelope {
-                            event: DomainEvent::FooHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(0),
-                        },
-                        EventEnvelope {
-                            event: DomainEvent::BarHappened(123),
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(1),
-                        },
-                        EventEnvelope {
-                            event: DomainEvent::BazHappened {
-                                id: 123,
-                                value: 246,
-                            },
-                            stream_id: STREAM_ID.clone(),
-                            stream_version: EventStreamVersion::new(2),
-                        },
-                    ]
-                )
+        fn handle(&self) -> Result<Vec<TestEvent>, Self::Error> {
+            Ok(vec![
+                TestEvent::One { id: self.id },
+                TestEvent::Two { id: self.id },
+            ])
+        }
+        fn event_stream_id(&self) -> EventStreamId {
+            EventStreamId(self.id)
+        }
+        fn get_state(&self) -> Self::State {}
+        fn set_state(&self, _: Self::State) -> Self {
+            (*self).clone()
+        }
+    }
+    #[tokio::test]
+    async fn read_error_returned_from_execute() {
+        let mut event_store = create_invalid_test_store();
+        let command = EventProducingCommand { id: Uuid::new_v4() };
+
+        match execute(command, &mut event_store, Default::default()).await {
+            Err(Error::EventStoreOther(source)) => {
+                assert!(source.to_string().contains("gRPC connection error"));
             }
-            other => panic!("Unexpected result: {:?}", other),
+            other => panic!("Expected EventStoreOther error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn builder_pattern_write_stream() {
+        let event_store = create_test_store();
+        let stream_id = EventStreamId::new();
+
+        let events = vec![TestEvent::One { id: Uuid::new_v4() }];
+        event_store
+            .stream_writer(stream_id.clone())
+            .no_stream()
+            .append(events.clone())
+            .await
+            .expect("Failed to append events");
+
+        let more_events = vec![TestEvent::Two { id: Uuid::new_v4() }];
+        event_store
+            .stream_writer(stream_id.clone())
+            .any_version()
+            .append(more_events.clone())
+            .await
+            .expect("Failed to append events");
+
+        let result = event_store
+            .stream_writer(stream_id.clone())
+            .expected_version(99)
+            .append(events.clone())
+            .await;
+
+        // Check error details
+        match result {
+            Err(Error::EventStoreVersionMismatch {
+                stream,
+                expected,
+                actual,
+                source: _,
+            }) => {
+                assert_eq!(stream, stream_id);
+                assert_eq!(expected, Some(EventStreamVersion::new(99)));
+                assert!(actual.is_some()); // the actual version should be available
+            }
+            other => panic!("Expected version mismatch error, got: {:?}", other),
         };
+    }
+
+    #[test]
+    fn execute_config_validates_inputs() {
+        match ExecuteConfig::default().with_max_retries(0) {
+            Err(Error::InvalidConfig { message, parameter }) => {
+                assert_eq!(message, "max_retries cannot be 0");
+                assert_eq!(parameter, Some("max_retries".to_string()));
+            }
+            other => panic!("Expected InvalidConfig error, got {:?}", other),
+        }
+
+        match ExecuteConfig::default().with_base_delay(0) {
+            Err(Error::InvalidConfig { message, parameter }) => {
+                assert_eq!(message, "base_retry_delay_ms cannot be 0");
+                assert_eq!(parameter, Some("base_retry_delay_ms".to_string()));
+            }
+            other => panic!("Expected InvalidConfig error, got {:?}", other),
+        }
+
+        // Test valid values
+        let config = ExecuteConfig::default()
+            .with_max_retries(5)
+            .expect("Failed to set max_retries")
+            .with_base_delay(200)
+            .expect("Failed to set base_delay");
+
+        assert_eq!(config.max_retries(), 5);
+        assert_eq!(config.retry_delay().base_delay_ms(), 200);
     }
 }

@@ -2,21 +2,33 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
+    services:
+      kurrent:
+        image: docker.eventstore.com/eventstore/eventstoredb-ee
+        ports:
+          - 2113:2113
+        env:
+          EVENTSTORE_CLUSTER_SIZE: 1
+          EVENTSTORE_RUN_PROJECTIONS: All
+          EVENTSTORE_START_STANDARD_PROJECTIONS: true
+          EVENTSTORE_NODE_PORT: 2113
+          EVENTSTORE_INSECURE: true
+          EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: true
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --verbose
+      - name: Run tests
+        run: cargo test --verbose
