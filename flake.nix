@@ -39,7 +39,6 @@
             rust-analyzer
             rustToolchain
             just
-            goose-cli
           ];
 
           env = {

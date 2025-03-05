@@ -1,0 +1,39 @@
+// For format details, see https://aka.ms/vscode-remote/devcontainer.json or the definition README at
+// https://github.com/microsoft/vscode-dev-containers/tree/master/containers/docker-existing-dockerfile
+{
+  "name": "mneme",
+  "dockerFile": "Dockerfile",
+  "context": "${localWorkspaceFolder}",
+  "build": {
+    "args": {
+      "USER_UID": "${localEnv:USER_UID}",
+      "USER_GID": "${localEnv:USER_GID}"
+    }
+  },
+  
+  // run arguments passed to docker
+  "runArgs": ["--security-opt", "label=disable"],
+
+  "containerEnv": {
+    // extensions to preload before other extensions
+    "PRELOAD_EXTENSIONS": "Rubymaniac.vscode-direnv"
+  },
+
+  // disable command overriding and updating remote user ID
+  "overrideCommand": false,
+  "userEnvProbe": "loginShell",
+  "updateRemoteUserUID": false,
+
+  // build development environment on creation, make sure you already have shell.nix
+  "onCreateCommand": "nix develop --install",
+
+  // Add the IDs of extensions you want installed when the container is created.
+  "extensions": ["Rubymaniac.vscode-direnv"],
+
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+
+  // Use 'forwardPorts' to make a list of ports inside the container available locally.
+  "forwardPorts": [2113, 5432]
+}
