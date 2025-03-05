@@ -1,40 +1,13 @@
-use mneme::{AggregateState, Command, Error, Event, EventStore, execute};
-use mneme::{ConnectionSettings, EventStreamId, Kurrent};
+use mneme::{AggregateState, Command, Error, Event, EventStore, EventStreamId, execute};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use uuid::Uuid;
 
-pub fn create_test_store() -> Kurrent {
-    let settings = ConnectionSettings::builder()
-        .host("localhost")
-        .port(2113)
-        .tls(false)
-        .username("admin")
-        .password("changeit")
-        .build()
-        .expect("Failed to build connection settings");
+pub trait TestStore: EventStore + Send {
+    fn create_test_store() -> Self;
 
-    Kurrent::new(&settings).expect("Failed to connect to event store")
-}
-
-pub async fn read_client_events(
-    client: &eventstore::Client,
-    stream_id: EventStreamId,
-) -> Vec<TestEvent> {
-    let mut stream = client
-        .read_stream(stream_id.clone(), &Default::default())
-        .await
-        .expect("failed to read stream");
-    let mut events = vec![];
-    while let Some(event) = stream.next().await.expect("failed to get next event") {
-        events.push(
-            event
-                .get_original_event()
-                .as_json::<TestEvent>()
-                .expect("failed to deserialize event"),
-        );
-    }
-    events
+    #[allow(async_fn_in_trait)]
+    async fn read_client_events(event_store: &Self, stream_id: EventStreamId) -> Vec<TestEvent>;
 }
 
 #[derive(Clone)]
@@ -212,8 +185,8 @@ impl Event for TestEvent {
     }
 }
 
-pub async fn test_successful_command_execution_with_no_events_produced() {
-    let mut event_store = create_test_store();
+pub async fn test_successful_command_execution_with_no_events_produced<Adapter: TestStore>() {
+    let mut event_store: Adapter = TestStore::create_test_store();
     let command = NoopCommand::new();
     let stream_id = command.event_stream_id();
 
@@ -226,8 +199,8 @@ pub async fn test_successful_command_execution_with_no_events_produced() {
     assert!(result.is_ok());
 }
 
-pub async fn test_command_rejection_error() {
-    let mut event_store = create_test_store();
+pub async fn test_command_rejection_error<Adapter: TestStore>() {
+    let mut event_store: Adapter = TestStore::create_test_store();
     let command = RejectCommand::new();
     let stream_id = command.event_stream_id();
 
@@ -255,47 +228,21 @@ pub async fn test_command_rejection_error() {
     }
 }
 
-pub async fn test_successful_execution_with_events_will_record_events() {
-    let mut event_store = create_test_store();
+pub async fn test_successful_execution_with_events_will_record_events<Adapter: TestStore>() {
+    let mut event_store: Adapter = TestStore::create_test_store();
     let id = Uuid::new_v4();
     let command = EventProducingCommand::new(id);
 
     let result = execute(command, &mut event_store, Default::default()).await;
     result.expect("failed to execute command");
 
-    let mut stream = event_store
-        .client
-        .read_stream(EventStreamId(id), &Default::default())
-        .await
-        .expect("failed to read stream");
-    let mut events: Vec<eventstore::ResolvedEvent> = vec![];
-    while let Some(event) = stream.next().await.expect("failed to get next event") {
-        events.push(event);
-    }
+    let events = TestStore::read_client_events(&event_store, EventStreamId(id)).await;
 
-    assert_eq!(events.len(), 2);
-
-    let event = events.first().unwrap().get_original_event();
-    assert_eq!(event.event_type, "TestEvent.One");
-    assert_eq!(
-        event
-            .as_json::<TestEvent>()
-            .expect("unable to deserialize event"),
-        TestEvent::One { id }
-    );
-
-    let event = events.get(1).unwrap().get_original_event();
-    assert_eq!(event.event_type, "TestEvent.Two");
-    assert_eq!(
-        event
-            .as_json::<TestEvent>()
-            .expect("unable to deserialize event"),
-        TestEvent::Two { id }
-    );
+    assert_eq!(events, vec![TestEvent::One { id }, TestEvent::Two { id }])
 }
 
-pub async fn test_existing_events_are_available_to_handler() {
-    let mut event_store = create_test_store();
+pub async fn test_existing_events_are_available_to_handler<Adapter: TestStore>() {
+    let mut event_store: Adapter = TestStore::create_test_store();
     let id = Uuid::new_v4();
     let rand_1: u16 = rand::random();
     let rand_2: u16 = rand::random();
@@ -315,7 +262,7 @@ pub async fn test_existing_events_are_available_to_handler() {
     match execute(command, &mut event_store, Default::default()).await {
         Ok(()) => {
             assert_eq!(
-                read_client_events(&event_store.client, EventStreamId(id)).await,
+                TestStore::read_client_events(&event_store, EventStreamId(id)).await,
                 vec![
                     TestEvent::FooHappened { id, value: rand_1 },
                     TestEvent::BarHappened { id, value: rand_2 },
