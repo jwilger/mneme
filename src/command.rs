@@ -3,7 +3,7 @@ use crate::event::Event;
 use crate::event_store::EventStreamId;
 use std::fmt::Debug;
 
-pub trait Command<E: Event> {
+pub trait Command<E: Event>: Clone {
     type State: AggregateState<E>;
     type Error: std::error::Error + Send + Sync + 'static;
 
