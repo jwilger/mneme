@@ -20,8 +20,8 @@ pub async fn execute<E, C, S>(
 ) -> Result<(), Error>
 where
     E: Event,
-    C: Command<E> + Clone + Send,
-    S: EventStore + Send,
+    C: Command<E>,
+    S: EventStore,
 {
     let mut retries = 0;
     let mut command = command;
