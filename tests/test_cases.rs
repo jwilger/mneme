@@ -32,9 +32,7 @@ impl Command<()> for NoopCommand {
         EventStreamId(self.id)
     }
     fn get_state(&self) -> Self::State {}
-    fn set_state(&self, _: Self::State) -> Self {
-        (*self).clone()
-    }
+    fn set_state(&mut self, _: Self::State) {}
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,9 +61,7 @@ impl Command<()> for RejectCommand {
         EventStreamId(self.id)
     }
     fn get_state(&self) -> Self::State {}
-    fn set_state(&self, _: Self::State) -> Self {
-        (*self).clone()
-    }
+    fn set_state(&mut self, _: Self::State) {}
 }
 
 #[derive(Clone)]
@@ -93,9 +89,7 @@ impl Command<TestEvent> for EventProducingCommand {
         EventStreamId(self.id)
     }
     fn get_state(&self) -> Self::State {}
-    fn set_state(&self, _: Self::State) -> Self {
-        (*self).clone()
-    }
+    fn set_state(&mut self, _: Self::State) {}
 }
 
 #[derive(Clone, Debug)]
@@ -105,14 +99,14 @@ pub struct StatefulCommandState {
 }
 
 impl AggregateState<TestEvent> for StatefulCommandState {
-    fn apply(&self, event: TestEvent) -> Self {
+    fn apply(&self, event: &TestEvent) -> Self {
         match event {
             TestEvent::FooHappened { value, .. } => Self {
-                foo: Some(value),
+                foo: Some(*value),
                 ..*self
             },
             TestEvent::BarHappened { value, .. } => Self {
-                bar: Some(value),
+                bar: Some(*value),
                 ..*self
             },
             _ => Self { ..*self },
@@ -146,10 +140,8 @@ impl Command<TestEvent> for StatefulCommand {
         self.state.clone()
     }
 
-    fn set_state(&self, state: Self::State) -> Self {
-        let mut new = (*self).clone();
-        new.state = state;
-        new
+    fn set_state(&mut self, state: Self::State) {
+        self.state = state;
     }
 
     fn event_stream_id(&self) -> EventStreamId {

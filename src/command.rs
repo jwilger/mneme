@@ -13,7 +13,7 @@ pub trait Command<E: Event>: Clone {
 
     fn get_state(&self) -> Self::State;
 
-    fn set_state(&self, state: Self::State) -> Self;
+    fn set_state(&mut self, state: Self::State);
 
     fn mark_retry(&self) -> Self
     where
@@ -26,11 +26,11 @@ pub trait Command<E: Event>: Clone {
         None
     }
 
-    fn apply(&mut self, event: E) -> Self
+    fn apply(&mut self, event: &E)
     where
         Self: Sized,
     {
-        self.set_state(self.get_state().apply(event))
+        self.set_state(self.get_state().apply(event));
     }
 }
 
@@ -45,14 +45,14 @@ impl<E: Event> Command<E> for () {
         EventStreamId::new()
     }
     fn get_state(&self) -> Self::State {}
-    fn set_state(&self, _: Self::State) -> Self {}
+    fn set_state(&mut self, _: Self::State) {}
     fn mark_retry(&self) -> Self {}
 }
 
 pub trait AggregateState<E: Event>: Debug + Sized {
-    fn apply(&self, event: E) -> Self;
+    fn apply(&self, event: &E) -> Self;
 }
 
 impl<E: Event> AggregateState<E> for () {
-    fn apply(&self, _: E) {}
+    fn apply(&self, _: &E) {}
 }
