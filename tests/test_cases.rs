@@ -21,7 +21,8 @@ impl NoopCommand {
     }
 }
 
-impl Command<()> for NoopCommand {
+impl Command for NoopCommand {
+    type Event = ();
     type State = ();
     type Error = Infallible;
 
@@ -50,7 +51,8 @@ impl RejectCommand {
     }
 }
 
-impl Command<()> for RejectCommand {
+impl Command for RejectCommand {
+    type Event = ();
     type State = ();
     type Error = RejectCommandError;
 
@@ -75,7 +77,8 @@ impl EventProducingCommand {
     }
 }
 
-impl Command<TestEvent> for EventProducingCommand {
+impl Command for EventProducingCommand {
+    type Event = TestEvent;
     type State = ();
     type Error = Infallible;
 
@@ -132,7 +135,8 @@ impl StatefulCommand {
     }
 }
 
-impl Command<TestEvent> for StatefulCommand {
+impl Command for StatefulCommand {
+    type Event = TestEvent;
     type State = StatefulCommandState;
     type Error = Infallible;
 

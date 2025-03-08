@@ -20,7 +20,7 @@ pub async fn execute<E, C, S>(
 ) -> Result<(), Error>
 where
     E: Event,
-    C: Command<E>,
+    C: Command<Event = E>,
     S: EventStore,
 {
     let mut retries = 0;
@@ -168,7 +168,8 @@ mod tests {
         }
     }
 
-    impl Command<TestEvent> for AlwaysConflictingCommand {
+    impl Command for AlwaysConflictingCommand {
+        type Event = TestEvent;
         type State = ();
         type Error = Error;
 
@@ -324,7 +325,8 @@ mod tests {
         state: StatefulCommandState,
     }
 
-    impl Command<TestEvent> for ConcurrentModificationCommand {
+    impl Command for ConcurrentModificationCommand {
+        type Event = TestEvent;
         type State = StatefulCommandState;
         type Error = Error;
 
@@ -459,7 +461,8 @@ mod tests {
         id: Uuid,
     }
 
-    impl Command<TestEvent> for EventProducingCommand {
+    impl Command for EventProducingCommand {
+        type Event = TestEvent;
         type State = ();
         type Error = Infallible;
 
