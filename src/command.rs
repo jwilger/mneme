@@ -14,7 +14,7 @@ pub trait Command: Clone {
 
     fn get_state(&self) -> Self::State;
 
-    fn set_state(&mut self, state: Self::State);
+    fn set_state(&mut self, state: &Self::State);
 
     fn mark_retry(&self) -> Self
     where
@@ -36,9 +36,11 @@ pub trait Command: Clone {
 }
 
 pub trait AggregateState<E: Event>: Debug + Sized {
-    fn apply(&self, event: &E) -> Self;
+    fn apply(&mut self, event: &E) -> &Self;
 }
 
 impl<E: Event> AggregateState<E> for () {
-    fn apply(&self, _: &E) {}
+    fn apply(&mut self, _: &E) -> &Self {
+        self
+    }
 }
