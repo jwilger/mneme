@@ -20,7 +20,7 @@ pub async fn execute<E, C, S>(
 ) -> Result<(), Error>
 where
     E: Event,
-    C: Command<E>,
+    C: Command<Event = E>,
     S: EventStore,
 {
     let mut retries = 0;
@@ -45,7 +45,7 @@ where
 
             Ok(mut event_stream) => {
                 while let Some((event, version)) = event_stream.next().await? {
-                    command = command.apply(event);
+                    command.apply(&event);
                     expected_version = Some(version);
                 }
             }
@@ -168,14 +168,13 @@ mod tests {
         }
     }
 
-    impl Command<TestEvent> for AlwaysConflictingCommand {
+    impl Command for AlwaysConflictingCommand {
+        type Event = TestEvent;
         type State = ();
         type Error = Error;
 
         fn get_state(&self) -> Self::State {}
-        fn set_state(&self, _: Self::State) -> Self {
-            (*self).clone()
-        }
+        fn set_state(&mut self, _: &Self::State) {}
         fn event_stream_id(&self) -> EventStreamId {
             EventStreamId(self.id)
         }
@@ -326,7 +325,8 @@ mod tests {
         state: StatefulCommandState,
     }
 
-    impl Command<TestEvent> for ConcurrentModificationCommand {
+    impl Command for ConcurrentModificationCommand {
+        type Event = TestEvent;
         type State = StatefulCommandState;
         type Error = Error;
 
@@ -334,10 +334,8 @@ mod tests {
             self.state.clone()
         }
 
-        fn set_state(&self, state: Self::State) -> Self {
-            let mut new = (*self).clone();
-            new.state = state;
-            new
+        fn set_state(&mut self, state: &Self::State) {
+            self.state = state.to_owned();
         }
 
         fn event_stream_id(&self) -> EventStreamId {
@@ -380,18 +378,17 @@ mod tests {
     }
 
     impl AggregateState<TestEvent> for StatefulCommandState {
-        fn apply(&self, event: TestEvent) -> Self {
+        fn apply(&mut self, event: &TestEvent) -> &Self {
             match event {
-                TestEvent::FooHappened { value, .. } => Self {
-                    foo: Some(value),
-                    ..*self
-                },
-                TestEvent::BarHappened { value, .. } => Self {
-                    bar: Some(value),
-                    ..*self
-                },
-                _ => Self { ..*self },
+                TestEvent::FooHappened { value, .. } => {
+                    self.foo = Some(*value);
+                }
+                TestEvent::BarHappened { value, .. } => {
+                    self.bar = Some(*value);
+                }
+                _ => (),
             }
+            self
         }
     }
     #[tokio::test]
@@ -463,7 +460,8 @@ mod tests {
         id: Uuid,
     }
 
-    impl Command<TestEvent> for EventProducingCommand {
+    impl Command for EventProducingCommand {
+        type Event = TestEvent;
         type State = ();
         type Error = Infallible;
 
@@ -477,10 +475,9 @@ mod tests {
             EventStreamId(self.id)
         }
         fn get_state(&self) -> Self::State {}
-        fn set_state(&self, _: Self::State) -> Self {
-            (*self).clone()
-        }
+        fn set_state(&mut self, _: &Self::State) {}
     }
+
     #[tokio::test]
     async fn read_error_returned_from_execute() {
         let mut event_store = create_invalid_test_store();

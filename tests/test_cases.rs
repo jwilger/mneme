@@ -21,7 +21,8 @@ impl NoopCommand {
     }
 }
 
-impl Command<()> for NoopCommand {
+impl Command for NoopCommand {
+    type Event = ();
     type State = ();
     type Error = Infallible;
 
@@ -32,9 +33,7 @@ impl Command<()> for NoopCommand {
         EventStreamId(self.id)
     }
     fn get_state(&self) -> Self::State {}
-    fn set_state(&self, _: Self::State) -> Self {
-        (*self).clone()
-    }
+    fn set_state(&mut self, _: &Self::State) {}
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +51,8 @@ impl RejectCommand {
     }
 }
 
-impl Command<()> for RejectCommand {
+impl Command for RejectCommand {
+    type Event = ();
     type State = ();
     type Error = RejectCommandError;
 
@@ -63,9 +63,7 @@ impl Command<()> for RejectCommand {
         EventStreamId(self.id)
     }
     fn get_state(&self) -> Self::State {}
-    fn set_state(&self, _: Self::State) -> Self {
-        (*self).clone()
-    }
+    fn set_state(&mut self, _: &Self::State) {}
 }
 
 #[derive(Clone)]
@@ -79,7 +77,8 @@ impl EventProducingCommand {
     }
 }
 
-impl Command<TestEvent> for EventProducingCommand {
+impl Command for EventProducingCommand {
+    type Event = TestEvent;
     type State = ();
     type Error = Infallible;
 
@@ -93,9 +92,7 @@ impl Command<TestEvent> for EventProducingCommand {
         EventStreamId(self.id)
     }
     fn get_state(&self) -> Self::State {}
-    fn set_state(&self, _: Self::State) -> Self {
-        (*self).clone()
-    }
+    fn set_state(&mut self, _: &Self::State) {}
 }
 
 #[derive(Clone, Debug)]
@@ -105,18 +102,17 @@ pub struct StatefulCommandState {
 }
 
 impl AggregateState<TestEvent> for StatefulCommandState {
-    fn apply(&self, event: TestEvent) -> Self {
+    fn apply(&mut self, event: &TestEvent) -> &Self {
         match event {
-            TestEvent::FooHappened { value, .. } => Self {
-                foo: Some(value),
-                ..*self
-            },
-            TestEvent::BarHappened { value, .. } => Self {
-                bar: Some(value),
-                ..*self
-            },
-            _ => Self { ..*self },
+            TestEvent::FooHappened { value, .. } => {
+                self.foo = Some(*value);
+            }
+            TestEvent::BarHappened { value, .. } => {
+                self.bar = Some(*value);
+            }
+            _ => (),
         }
+        self
     }
 }
 
@@ -138,7 +134,8 @@ impl StatefulCommand {
     }
 }
 
-impl Command<TestEvent> for StatefulCommand {
+impl Command for StatefulCommand {
+    type Event = TestEvent;
     type State = StatefulCommandState;
     type Error = Infallible;
 
@@ -146,10 +143,8 @@ impl Command<TestEvent> for StatefulCommand {
         self.state.clone()
     }
 
-    fn set_state(&self, state: Self::State) -> Self {
-        let mut new = (*self).clone();
-        new.state = state;
-        new
+    fn set_state(&mut self, state: &Self::State) {
+        self.state = state.to_owned();
     }
 
     fn event_stream_id(&self) -> EventStreamId {
