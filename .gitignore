@@ -22,5 +22,6 @@ Cargo.lock
 .cargo
 .bacon-locations
 .pg_data
+.direnv
 
 .direnv
