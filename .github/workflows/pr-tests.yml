@@ -1,0 +1,48 @@
+name: PR Tests
+
+on:
+  pull_request:
+    branches: ["main"]
+  merge_group:
+    types: [checks_requested]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      kurrent:
+        image: eventstore/eventstore:24.10.14-bookworm-slim
+        ports:
+          - 2113:2113
+        env:
+          EVENTSTORE_CLUSTER_SIZE: 1
+          EVENTSTORE_RUN_PROJECTIONS: All
+          EVENTSTORE_START_STANDARD_PROJECTIONS: true
+          EVENTSTORE_NODE_PORT: 2113
+          EVENTSTORE_INSECURE: true
+          EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the `nightly` channel (with rust-src and
+      # rustfmt components) because this crate relies on serde's "unstable"
+      # feature, which requires a nightly compiler. dtolnay/rust-toolchain@stable
+      # would force stable Rust and break the build, so we install nightly
+      # explicitly here to match rust-toolchain.toml.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
