@@ -9,7 +9,7 @@ env:
 
 jobs:
   build:
-    runs-on: [self-hosted, self-hosted-gregor]
+    runs-on: ubuntu-latest
 
     services:
       kurrent:
@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
